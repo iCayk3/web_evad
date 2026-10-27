@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, AlertCircle, Loader2, Eye, EyeOff, Radio, RefreshCw, KeyRound, ExternalLink } from 'lucide-react';
+import { X, CheckCircle2, AlertCircle, Loader2, Eye, EyeOff, Radio, RefreshCw, KeyRound, ExternalLink, Clock } from 'lucide-react';
 import { API_BASE } from '../config/api';
 
 interface RbxConfigModalProps {
@@ -16,6 +16,7 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
   const [showToken, setShowToken] = useState(false);
   const [version, setVersion] = useState('v2');
   const [lastSyncAt, setLastSyncAt] = useState('');
+  const [nextSyncAt, setNextSyncAt] = useState('');
   const [statusConexao, setStatusConexao] = useState('desconectado');
   const [ultimoErro, setUltimoErro] = useState('');
 
@@ -41,6 +42,7 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
         setHasSavedToken(data.hasToken || false);
         setVersion(data.version || 'v2');
         setLastSyncAt(data.lastSyncAt || '');
+        setNextSyncAt(data.nextSyncAt || '');
         setStatusConexao(data.statusConexao || 'desconectado');
         setUltimoErro(data.ultimoErro || '');
       })
@@ -267,6 +269,28 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
                   <div className="text-[10px] text-slate-500 font-normal mt-0.5">Consultas em Lote / Coortes</div>
                 </button>
               </div>
+            </div>
+
+            {/* Automatic Sync Schedule Info */}
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg text-xs space-y-1.5">
+              <div className="flex items-center justify-between text-blue-900 font-semibold">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Rotina Automática Diária: 03:30 e 12:30</span>
+                </span>
+                <span className="bg-blue-100 text-blue-800 text-[10px] px-1.5 py-0.5 rounded font-medium">
+                  Estratégia Delta
+                </span>
+              </div>
+              <p className="text-[11px] text-blue-700 leading-relaxed">
+                Executa automaticamente de madrugada (03:30) e no almoço (12:30), consultando apenas contratos pendentes (bloqueados e suspensos) para economizar até 90% de requisições ao RBX.
+              </p>
+              {nextSyncAt && (
+                <div className="text-[11px] text-blue-900 pt-1 border-t border-blue-200/60 flex items-center justify-between font-medium">
+                  <span>Próxima execução agendada:</span>
+                  <span className="font-bold">{nextSyncAt}</span>
+                </div>
+              )}
             </div>
 
             {/* Test result message */}

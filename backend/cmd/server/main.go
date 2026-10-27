@@ -598,8 +598,561 @@ func queryAvailableYears(ctx context.Context) []string {
 	return years
 }
 
+type SyncResult struct {
+	Success    bool           `json:"success"`
+	Message    string         `json:"message"`
+	LastSyncAt string         `json:"lastSyncAt"`
+	Stats      map[string]int `json:"stats"`
+	Strategy   string         `json:"strategy"`
+	Duration   string         `json:"duration"`
+	Error      string         `json:"error,omitempty"`
+}
+
+func getNextSyncTime() time.Time {
+	now := time.Now()
+	// Horários programados: 03:30 e 12:30
+	today330 := time.Date(now.Year(), now.Month(), now.Day(), 3, 30, 0, 0, now.Location())
+	today1230 := time.Date(now.Year(), now.Month(), now.Day(), 12, 30, 0, 0, now.Location())
+	tomorrow330 := today330.AddDate(0, 0, 1)
+
+	if now.Before(today330) {
+		return today330
+	} else if now.Before(today1230) {
+		return today1230
+	} else {
+		return tomorrow330
+	}
+}
+
+func startBackgroundSyncScheduler() {
+	go func() {
+		log.Println("[Scheduler] Agendador RBX iniciado. Horários de execução diária: 03:30 e 12:30 (Estratégia Delta de Baixo Consumo).")
+		for {
+			now := time.Now()
+			nextRun := getNextSyncTime()
+			duration := nextRun.Sub(now)
+
+			log.Printf("[Scheduler] Próxima sincronização automática programada para: %s (daqui a %v)",
+				nextRun.Format("02/01/2006 15:04:05"), duration.Round(time.Second))
+
+			time.Sleep(duration)
+
+			if dbPool != nil {
+				var autoSync bool
+				err := dbPool.QueryRow(context.Background(), "SELECT auto_sync FROM configuracoes_rbx WHERE id = 1").Scan(&autoSync)
+				if err == nil && !autoSync {
+					log.Println("[Scheduler] Sincronização automática desativada nas configurações. Aguardando próximo ciclo.")
+					time.Sleep(1 * time.Minute)
+					continue
+				}
+			}
+
+			log.Printf("[Scheduler] Executando rotina delta programada das %s...", time.Now().Format("15:04"))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			res, err := executeRbxSync(ctx, "", true /* deltaOnly */)
+			cancel()
+
+			if err != nil {
+				log.Printf("[Scheduler ERROR] Falha na sincronização programada: %v", err)
+			} else {
+				log.Printf("[Scheduler SUCESSO] %s", res.Message)
+			}
+
+			time.Sleep(1 * time.Minute)
+		}
+	}()
+}
+
+func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncResult, error) {
+	if dbPool == nil {
+		return nil, fmt.Errorf("banco de dados não disponível")
+	}
+
+	start := time.Now()
+
+	// 1. Obter credenciais do RBX
+	var rbxURL, rbxToken, rbxVersion string
+	err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+	if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
+		return nil, fmt.Errorf("integração RBX não configurada. Configure a URL e a Chave de Integração do RBX antes de sincronizar")
+	}
+
+	// 2. Buscar eventos de bloqueio a sincronizar
+	type EventSyncInfo struct {
+		ID              string
+		Contract        string
+		CodigoRbx       string
+		Competencia     string
+		BlockDate       time.Time
+		DataDesbloqueio *time.Time
+	}
+
+	var eventRows []EventSyncInfo
+	var query string
+	var args []interface{}
+
+	strategy := "completa"
+	if deltaOnly {
+		strategy = "delta_inteligente"
+	}
+
+	if month != "" {
+		if deltaOnly {
+			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio 
+			         FROM eventos_bloqueio 
+			         WHERE mes_competencia = $1 
+			           AND (status_desfecho IN ('blocked', 'suspended', 'other') OR status_desfecho IS NULL)`
+			args = append(args, month)
+		} else {
+			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio 
+			         FROM eventos_bloqueio 
+			         WHERE mes_competencia = $1`
+			args = append(args, month)
+		}
+	} else {
+		if deltaOnly {
+			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio 
+			         FROM eventos_bloqueio 
+			         WHERE status_desfecho IN ('blocked', 'suspended', 'other') OR status_desfecho IS NULL`
+		} else {
+			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio 
+			         FROM eventos_bloqueio`
+		}
+	}
+
+	rows, err := dbPool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao consultar contratos: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, c, cod, comp string
+		var bDate time.Time
+		var uDate *time.Time
+		if err := rows.Scan(&id, &c, &cod, &comp, &bDate, &uDate); err == nil && strings.TrimSpace(c) != "" {
+			eventRows = append(eventRows, EventSyncInfo{
+				ID:              id,
+				Contract:        strings.TrimSpace(c),
+				CodigoRbx:       strings.TrimSpace(cod),
+				Competencia:     strings.TrimSpace(comp),
+				BlockDate:       bDate,
+				DataDesbloqueio: uDate,
+			})
+		}
+	}
+
+	now := time.Now()
+	nowStr := now.Format("02/01/2006 15:04:05")
+
+	if len(eventRows) == 0 {
+		return &SyncResult{
+			Success:    true,
+			Message:    "Nenhum contrato pendente na base para sincronizar (todos já regularizados ou consolidados).",
+			LastSyncAt: nowStr,
+			Strategy:   strategy,
+			Duration:   time.Since(start).Round(time.Millisecond).String(),
+			Stats:      map[string]int{"total": 0},
+		}, nil
+	}
+
+	// Extrai códigos únicos de contratos (removendo pontos e vírgulas) e indexa eventos por contrato
+	uniqueContractsMap := make(map[string]bool)
+	uniqueContracts := make([]string, 0, len(eventRows))
+	eventsByContract := make(map[string][]EventSyncInfo)
+
+	for _, ev := range eventRows {
+		clean := strings.ReplaceAll(ev.Contract, ".", "")
+		clean = strings.ReplaceAll(clean, ",", "")
+		clean = strings.TrimSpace(clean)
+		if clean != "" {
+			eventsByContract[clean] = append(eventsByContract[clean], ev)
+			if !uniqueContractsMap[clean] {
+				uniqueContractsMap[clean] = true
+				uniqueContracts = append(uniqueContracts, clean)
+			}
+		}
+	}
+
+	client := rbx.NewClient(rbx.Config{
+		URL:     rbxURL,
+		Token:   rbxToken,
+		Version: rbxVersion,
+	})
+
+	// 2.1 Consulta antecipada de faturas abertas no RBX para a "Regra da Soberania do Boleto" (Opção 1)
+	type openDocInfo struct {
+		DueDate string
+		Value   float64
+	}
+	openInvoicesByContract := make(map[string][]openDocInfo)
+	openInvoicesByClient := make(map[string][]openDocInfo)
+
+	openDocs, errOpen := client.ConsultarDocumentosAbertos(ctx, "Origem = 'FAT'")
+	if errOpen != nil {
+		log.Printf("[RBX SYNC WARN] Não foi possível consultar documentos abertos: %v", errOpen)
+	} else {
+		for _, doc := range openDocs {
+			d := openDocInfo{DueDate: doc.DueDate, Value: doc.Value}
+			if doc.ContractCode != "" {
+				openInvoicesByContract[doc.ContractCode] = append(openInvoicesByContract[doc.ContractCode], d)
+			}
+			if doc.ClientCode != "" {
+				openInvoicesByClient[doc.ClientCode] = append(openInvoicesByClient[doc.ClientCode], d)
+			}
+		}
+		log.Printf("[RBX SYNC] %d documentos abertos indexados para verificação da Soberania do Boleto", len(openDocs))
+	}
+
+	// 3. Consulta em lotes (batch) de 50 contratos
+	batchSize := 50
+	syncStats := map[string]int{
+		"total":       0,
+		"active":      0,
+		"blocked":     0,
+		"churned":     0,
+		"suspended":   0,
+		"tempUnblock": 0,
+		"other":       0,
+	}
+
+	var lastError error
+	for i := 0; i < len(uniqueContracts); i += batchSize {
+		end := i + batchSize
+		if end > len(uniqueContracts) {
+			end = len(uniqueContracts)
+		}
+		chunk := uniqueContracts[i:end]
+
+		results, err := client.ConsultarContratos(ctx, chunk)
+		if err != nil {
+			lastError = err
+			log.Printf("[RBX SYNC ERROR lote %d-%d] %v", i, end, err)
+			if strings.Contains(err.Error(), "Invalid service") || strings.Contains(err.Error(), "98") {
+				break
+			}
+			continue
+		}
+
+		// Atualiza cada contrato no banco de dados com refinamento temporal e soberania do boleto
+		for _, res := range results {
+			cleanNum := strings.ReplaceAll(strings.ReplaceAll(res.ContractCode, ".", ""), ",", "")
+			cleanNum = strings.TrimSpace(cleanNum)
+			cleanCli := strings.ReplaceAll(strings.ReplaceAll(res.ClientCode, ".", ""), ",", "")
+			cleanCli = strings.TrimSpace(cleanCli)
+
+			isMimo := (res.MonthlyFee <= 0.01)
+
+			// Atualiza o evento com o plano, mensalidade e bairro específicos deste contrato
+			_, _ = dbPool.Exec(ctx, `
+				UPDATE eventos_bloqueio SET
+					plano = CASE WHEN $1 != '' THEN $1 ELSE plano END,
+					valor_mensalidade = $2,
+					eh_mimo = $3,
+					bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END
+				WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4
+			`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood)
+
+			// Atualiza dados do cliente no cadastro
+			if res.MonthlyFee > 0 {
+				_, _ = dbPool.Exec(ctx, `
+					UPDATE clientes SET
+						valor_mensalidade = $1,
+						plano = CASE WHEN $2 != '' THEN $2 ELSE plano END,
+						contrato = CASE WHEN $3 != '' THEN $3 ELSE contrato END,
+						cidade = CASE WHEN $4 != '' THEN $4 ELSE cidade END,
+						nome = CASE WHEN $5 != '' THEN $5 ELSE nome END,
+						bairro = CASE WHEN $8 != '' THEN $8 ELSE bairro END
+					WHERE (codigo_rbx = $6 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $7)
+				`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
+			} else {
+				_, _ = dbPool.Exec(ctx, `
+					UPDATE clientes SET
+						cidade = CASE WHEN (cidade IS NULL OR cidade = '') AND $1 != '' THEN $1 ELSE cidade END,
+						nome = CASE WHEN (nome IS NULL OR nome = '') AND $2 != '' THEN $2 ELSE nome END,
+						bairro = CASE WHEN (bairro IS NULL OR bairro = '') AND $5 != '' THEN $5 ELSE bairro END
+					WHERE (codigo_rbx = $3 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4)
+				`, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
+			}
+
+			var lastOpDate *time.Time = res.LastOperationDate
+
+			for _, ev := range eventsByContract[cleanNum] {
+				bDate := ev.BlockDate
+
+				hasOpenCohortInvoice := false
+				isInheritedDebt := false
+				origDueDate := ""
+				debtLabel := ""
+
+				if !bDate.IsZero() {
+					maxDueDate := bDate.AddDate(0, 0, 15).Format("2006-01-02")
+					minDueDate := bDate.AddDate(0, 0, -90).Format("2006-01-02")
+					cohortMonthStart := ev.Competencia + "-01"
+					hasCurrentOrFutureInvoice := false
+					var oldestDueDate string
+
+					var docs []openDocInfo
+					if d, ok := openInvoicesByContract[cleanNum]; ok {
+						docs = append(docs, d...)
+					}
+					if d, ok := openInvoicesByClient[cleanCli]; ok {
+						docs = append(docs, d...)
+					}
+					for _, d := range docs {
+						if d.DueDate >= minDueDate && d.DueDate <= maxDueDate {
+							hasOpenCohortInvoice = true
+							if oldestDueDate == "" || d.DueDate < oldestDueDate {
+								oldestDueDate = d.DueDate
+							}
+							if d.DueDate >= cohortMonthStart {
+								hasCurrentOrFutureInvoice = true
+							}
+						}
+					}
+
+					if hasOpenCohortInvoice && !hasCurrentOrFutureInvoice && oldestDueDate != "" {
+						isInheritedDebt = true
+						origDueDate = oldestDueDate
+						parts := strings.Split(oldestDueDate, "-")
+						displayDate := oldestDueDate
+						if len(parts) == 3 {
+							displayDate = parts[2] + "/" + parts[1] + "/" + parts[0]
+						}
+						debtLabel = fmt.Sprintf("Inadimplência de Renegociação Anterior (Débito Original Venc. %s)", displayDate)
+					}
+				}
+
+				syncStats["total"]++
+
+				var evadStatus string
+				isSemUso := strings.Contains(strings.ToUpper(res.CancellationReason), "SEM USO")
+
+				if hasOpenCohortInvoice {
+					if res.StatusCode == "C" || res.StatusCode == "N" {
+						evadStatus = "churned"
+						syncStats["churned"]++
+					} else if res.StatusCode == "S" {
+						evadStatus = "suspended"
+						syncStats["suspended"]++
+					} else {
+						evadStatus = "blocked"
+						syncStats["blocked"]++
+					}
+
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE eventos_bloqueio SET
+							status_rbx_codigo = $1,
+							status_rbx_descricao = $2,
+							motivo_cancelamento = $3,
+							dias_vencido = $4,
+							status_desfecho = $5,
+							data_desbloqueio = NULL,
+							dias_para_resolver = NULL,
+							ultima_operacao_rbx = $6,
+							sincronizado_em = $7,
+							eh_debito_herdado = $8,
+							vencimento_debito_original = $9,
+							rotulo_debito = $10
+						WHERE id = $11
+					`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, evadStatus, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
+					continue
+				}
+
+				if res.StatusCode == "A" {
+					evadStatus = "returned"
+					syncStats["active"]++
+				} else if res.StatusCode == "B" {
+					evadStatus = "blocked"
+					syncStats["blocked"]++
+				} else if res.StatusCode == "C" || res.StatusCode == "N" {
+					evadStatus = "churned"
+					syncStats["churned"]++
+				} else if res.StatusCode == "S" {
+					evadStatus = "suspended"
+					syncStats["suspended"]++
+				} else if res.StatusCode == "D" {
+					evadStatus = "returned"
+					syncStats["tempUnblock"]++
+				} else {
+					evadStatus = "other"
+					syncStats["other"]++
+				}
+
+				if isSemUso && (res.StatusCode == "C" || res.StatusCode == "N") {
+					evadStatus = "churned"
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE eventos_bloqueio SET
+							status_rbx_codigo = $1,
+							status_rbx_descricao = $2,
+							motivo_cancelamento = $3,
+							dias_vencido = $4,
+							status_desfecho = 'churned',
+							data_desbloqueio = NULL,
+							dias_para_resolver = NULL,
+							ultima_operacao_rbx = $5,
+							sincronizado_em = $6,
+							eh_debito_herdado = $7,
+							vencimento_debito_original = $8,
+							rotulo_debito = $9
+						WHERE id = $10
+					`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
+					continue
+				}
+
+				if evadStatus == "returned" && ev.DataDesbloqueio == nil && lastOpDate != nil {
+					calcUnblock := *lastOpDate
+					days := int(calcUnblock.Sub(ev.BlockDate).Hours() / 24)
+					if days < 0 {
+						days = 0
+					}
+
+					var bucket string
+					if days <= 7 {
+						bucket = "0-7"
+					} else if days <= 15 {
+						bucket = "8-15"
+					} else if days <= 30 {
+						bucket = "16-30"
+					} else {
+						bucket = ">30"
+					}
+
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE eventos_bloqueio SET
+							status_rbx_codigo = $1,
+							status_rbx_descricao = $2,
+							motivo_cancelamento = $3,
+							dias_vencido = $4,
+							status_desfecho = $5,
+							data_desbloqueio = $6,
+							dias_para_resolver = $7,
+							faixa_tempo = $8,
+							ultima_operacao_rbx = $9,
+							sincronizado_em = $10,
+							eh_debito_herdado = $11,
+							vencimento_debito_original = $12,
+							rotulo_debito = $13
+						WHERE id = $14
+					`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, evadStatus, calcUnblock, days, bucket, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
+				} else if evadStatus == "churned" {
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE eventos_bloqueio SET
+							status_rbx_codigo = $1,
+							status_rbx_descricao = $2,
+							motivo_cancelamento = $3,
+							dias_vencido = $4,
+							status_desfecho = 'churned',
+							faixa_tempo = 'cancelado',
+							data_desbloqueio = NULL,
+							dias_para_resolver = NULL,
+							ultima_operacao_rbx = $5,
+							sincronizado_em = $6,
+							eh_debito_herdado = $7,
+							vencimento_debito_original = $8,
+							rotulo_debito = $9
+						WHERE id = $10
+					`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
+				} else {
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE eventos_bloqueio SET
+							status_rbx_codigo = $1,
+							status_rbx_descricao = $2,
+							motivo_cancelamento = $3,
+							dias_vencido = $4,
+							status_desfecho = $5,
+							ultima_operacao_rbx = $6,
+							sincronizado_em = $7,
+							eh_debito_herdado = $8,
+							vencimento_debito_original = $9,
+							rotulo_debito = $10
+						WHERE id = $11
+					`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, evadStatus, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
+				}
+			}
+		}
+	}
+
+	// Vinculação pós-sincronização de Mimos aos Contratos Principais:
+	_, _ = dbPool.Exec(ctx, `
+		UPDATE eventos_bloqueio m
+		SET contrato_principal = p.contrato
+		FROM (
+			SELECT DISTINCT ON (codigo_rbx, mes_competencia) codigo_rbx, mes_competencia, contrato
+			FROM eventos_bloqueio
+			WHERE (eh_mimo IS FALSE OR eh_mimo IS NULL) AND valor_mensalidade > 0
+			ORDER BY codigo_rbx, mes_competencia, valor_mensalidade DESC
+		) p
+		WHERE m.eh_mimo IS TRUE 
+		  AND m.codigo_rbx = p.codigo_rbx 
+		  AND m.mes_competencia = p.mes_competencia
+	`)
+
+	_, _ = dbPool.Exec(ctx, `
+		UPDATE eventos_bloqueio p
+		SET mimos_vinculados = m.nomes_mimos
+		FROM (
+			SELECT codigo_rbx, mes_competencia, STRING_AGG(DISTINCT plano, ', ') as nomes_mimos
+			FROM eventos_bloqueio
+			WHERE eh_mimo IS TRUE AND plano IS NOT NULL AND plano != ''
+			GROUP BY codigo_rbx, mes_competencia
+		) m
+		WHERE (p.eh_mimo IS FALSE OR p.eh_mimo IS NULL)
+		  AND p.codigo_rbx = m.codigo_rbx 
+		  AND p.mes_competencia = m.mes_competencia
+	`)
+
+	// Propagar bairros/vilas para qualquer evento que ainda não tenha
+	_, _ = dbPool.Exec(ctx, `
+		UPDATE eventos_bloqueio e
+		SET bairro = c.bairro
+		FROM clientes c
+		WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+		  AND (e.bairro IS NULL OR e.bairro = '')
+		  AND c.bairro IS NOT NULL AND c.bairro != ''
+	`)
+
+	if syncStats["total"] == 0 && lastError != nil {
+		errMessage := lastError.Error()
+		_, _ = dbPool.Exec(ctx, `
+			UPDATE configuracoes_rbx SET 
+				status_conexao = 'erro', 
+				ultimo_erro = $1,
+				atualizado_em = CURRENT_TIMESTAMP 
+			WHERE id = 1
+		`, errMessage)
+		return nil, lastError
+	}
+
+	// Atualiza timestamp da última sincronização
+	_, _ = dbPool.Exec(ctx, `
+		UPDATE configuracoes_rbx SET 
+			last_sync_at = $1, 
+			status_conexao = 'conectado', 
+			ultimo_erro = '',
+			atualizado_em = CURRENT_TIMESTAMP 
+		WHERE id = 1
+	`, now)
+
+	durationStr := time.Since(start).Round(time.Millisecond).String()
+	msg := fmt.Sprintf("Sincronização RBX (%s) concluída: %d contratos consultados em %s!", strategy, syncStats["total"], durationStr)
+	if deltaOnly {
+		msg = fmt.Sprintf("Sincronização Delta concluída: %d contratos pendentes verificados em %s (economia de chamadas ao RBX).", syncStats["total"], durationStr)
+	}
+
+	return &SyncResult{
+		Success:    true,
+		Message:    msg,
+		LastSyncAt: nowStr,
+		Stats:      syncStats,
+		Strategy:   strategy,
+		Duration:   durationStr,
+	}, nil
+}
+
 func main() {
 	initDB()
+	startBackgroundSyncScheduler()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -749,6 +1302,7 @@ func main() {
 			erroStr = *ultimoErro
 		}
 
+		nextSync := getNextSyncTime()
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"url":           url,
 			"tokenMasked":   rbx.MaskToken(token),
@@ -756,6 +1310,9 @@ func main() {
 			"version":       version,
 			"autoSync":      autoSync,
 			"lastSyncAt":    lastSyncStr,
+			"nextSyncAt":    nextSync.Format("02/01/2006 15:04:05"),
+			"syncSchedules": []string{"03:30", "12:30"},
+			"strategy":      "delta_inteligente",
 			"statusConexao": statusConexao,
 			"ultimoErro":    erroStr,
 		})
@@ -881,475 +1438,31 @@ func main() {
 			return
 		}
 
-		ctx := r.Context()
-
 		var body struct {
-			Month string `json:"month"` // Opcional, ex: "2026-01"
+			Month     string `json:"month"`
+			ForceAll  bool   `json:"forceAll"`
+			DeltaOnly *bool  `json:"deltaOnly"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 
-		// 1. Obter credenciais do RBX
-		var rbxURL, rbxToken, rbxVersion string
-		err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
-		if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
-			http.Error(w, `{"error": "Integração RBX não configurada. Configure a URL e a Chave de Integração do RBX antes de sincronizar."}`, http.StatusBadRequest)
-			return
+		deltaOnly := true
+		if body.ForceAll {
+			deltaOnly = false
+		} else if body.DeltaOnly != nil {
+			deltaOnly = *body.DeltaOnly
 		}
 
-		// 2. Buscar eventos de bloqueio a sincronizar
-		type EventSyncInfo struct {
-			ID              string
-			Contract        string
-			CodigoRbx       string
-			Competencia     string
-			BlockDate       time.Time
-			DataDesbloqueio *time.Time
-		}
-
-		var eventRows []EventSyncInfo
-		var query string
-		var args []interface{}
-		if body.Month != "" {
-			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio FROM eventos_bloqueio WHERE mes_competencia = $1`
-			args = append(args, body.Month)
-		} else {
-			query = `SELECT id, contrato, codigo_rbx, mes_competencia, data_bloqueio, data_desbloqueio FROM eventos_bloqueio`
-		}
-
-		rows, err := dbPool.Query(ctx, query, args...)
+		res, err := executeRbxSync(r.Context(), body.Month, deltaOnly)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar contratos: %v"}`, err), http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var id, c, cod, comp string
-			var bDate time.Time
-			var uDate *time.Time
-			if err := rows.Scan(&id, &c, &cod, &comp, &bDate, &uDate); err == nil && strings.TrimSpace(c) != "" {
-				eventRows = append(eventRows, EventSyncInfo{
-					ID:              id,
-					Contract:        strings.TrimSpace(c),
-					CodigoRbx:       strings.TrimSpace(cod),
-					Competencia:     strings.TrimSpace(comp),
-					BlockDate:       bDate,
-					DataDesbloqueio: uDate,
-				})
-			}
-		}
-
-		if len(eventRows) == 0 {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": true,
-				"message": "Nenhum contrato cadastrado na base para sincronizar.",
-				"total":   0,
-			})
-			return
-		}
-
-		// Extrai códigos únicos de contratos (removendo pontos e vírgulas) e indexa eventos por contrato
-		uniqueContractsMap := make(map[string]bool)
-		uniqueContracts := make([]string, 0, len(eventRows))
-		eventsByContract := make(map[string][]EventSyncInfo)
-
-		for _, ev := range eventRows {
-			clean := strings.ReplaceAll(ev.Contract, ".", "")
-			clean = strings.ReplaceAll(clean, ",", "")
-			clean = strings.TrimSpace(clean)
-			if clean != "" {
-				eventsByContract[clean] = append(eventsByContract[clean], ev)
-				if !uniqueContractsMap[clean] {
-					uniqueContractsMap[clean] = true
-					uniqueContracts = append(uniqueContracts, clean)
-				}
-			}
-		}
-
-		client := rbx.NewClient(rbx.Config{
-			URL:     rbxURL,
-			Token:   rbxToken,
-			Version: rbxVersion,
-		})
-
-		// 2.1 Consulta antecipada de faturas abertas no RBX para a "Regra da Soberania do Boleto" (Opção 1)
-		type openDocInfo struct {
-			DueDate string
-			Value   float64
-		}
-		openInvoicesByContract := make(map[string][]openDocInfo)
-		openInvoicesByClient := make(map[string][]openDocInfo)
-
-		openDocs, errOpen := client.ConsultarDocumentosAbertos(ctx, "Origem = 'FAT'")
-		if errOpen != nil {
-			log.Printf("[RBX SYNC WARN] Não foi possível consultar documentos abertos: %v", errOpen)
-		} else {
-			for _, doc := range openDocs {
-				d := openDocInfo{DueDate: doc.DueDate, Value: doc.Value}
-				if doc.ContractCode != "" {
-					openInvoicesByContract[doc.ContractCode] = append(openInvoicesByContract[doc.ContractCode], d)
-				}
-				if doc.ClientCode != "" {
-					openInvoicesByClient[doc.ClientCode] = append(openInvoicesByClient[doc.ClientCode], d)
-				}
-			}
-			log.Printf("[RBX SYNC] %d documentos abertos indexados para verificação da Soberania do Boleto", len(openDocs))
-		}
-
-		// 3. Consulta em lotes (batch) de 50 contratos
-		batchSize := 50
-		now := time.Now()
-		syncStats := map[string]int{
-			"total":       0,
-			"active":      0,
-			"blocked":     0,
-			"churned":     0,
-			"suspended":   0,
-			"tempUnblock": 0,
-			"other":       0,
-		}
-
-		var lastError error
-		for i := 0; i < len(uniqueContracts); i += batchSize {
-			end := i + batchSize
-			if end > len(uniqueContracts) {
-				end = len(uniqueContracts)
-			}
-			chunk := uniqueContracts[i:end]
-
-			results, err := client.ConsultarContratos(ctx, chunk)
-			if err != nil {
-				lastError = err
-				log.Printf("[RBX SYNC ERROR lote %d-%d] %v", i, end, err)
-				if strings.Contains(err.Error(), "Invalid service") || strings.Contains(err.Error(), "98") {
-					break // Chave sem permissão, aborta os próximos lotes imediatamente
-				}
-				continue
-			}
-
-			// Atualiza cada contrato no banco de dados com refinamento temporal e soberania do boleto
-			for _, res := range results {
-				cleanNum := strings.ReplaceAll(strings.ReplaceAll(res.ContractCode, ".", ""), ",", "")
-				cleanNum = strings.TrimSpace(cleanNum)
-				cleanCli := strings.ReplaceAll(strings.ReplaceAll(res.ClientCode, ".", ""), ",", "")
-				cleanCli = strings.TrimSpace(cleanCli)
-
-				// Identificação de Mimo / SVA: contrato com valor R$ 0,00 ou planos adicionais
-				isMimo := (res.MonthlyFee <= 0.01)
-
-				// Atualiza o evento com o plano e mensalidade específicos deste contrato
-				_, _ = dbPool.Exec(ctx, `
-					UPDATE eventos_bloqueio SET
-						plano = CASE WHEN $1 != '' THEN $1 ELSE plano END,
-						valor_mensalidade = $2,
-						eh_mimo = $3,
-						bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END
-					WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4
-				`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood)
-
-				// Atualiza dados do cliente no cadastro
-				// REGRA CRÍTICA: Contratos Mimo (R$ 0,00) NUNCA sobrescrevem a mensalidade ou o plano principal de internet!
-				if res.MonthlyFee > 0 {
-					_, _ = dbPool.Exec(ctx, `
-						UPDATE clientes SET
-							valor_mensalidade = $1,
-							plano = CASE WHEN $2 != '' THEN $2 ELSE plano END,
-							contrato = CASE WHEN $3 != '' THEN $3 ELSE contrato END,
-							cidade = CASE WHEN $4 != '' THEN $4 ELSE cidade END,
-							nome = CASE WHEN $5 != '' THEN $5 ELSE nome END,
-							bairro = CASE WHEN $8 != '' THEN $8 ELSE bairro END
-						WHERE (codigo_rbx = $6 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $7)
-					`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
-				} else {
-					_, _ = dbPool.Exec(ctx, `
-						UPDATE clientes SET
-							cidade = CASE WHEN (cidade IS NULL OR cidade = '') AND $1 != '' THEN $1 ELSE cidade END,
-							nome = CASE WHEN (nome IS NULL OR nome = '') AND $2 != '' THEN $2 ELSE nome END,
-							bairro = CASE WHEN (bairro IS NULL OR bairro = '') AND $5 != '' THEN $5 ELSE bairro END
-						WHERE (codigo_rbx = $3 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4)
-					`, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
-				}
-
-				var lastOpDate *time.Time = res.LastOperationDate
-
-				// Itera sobre todos os eventos vinculados a este contrato (cada competência avaliada de forma independente)
-				for _, ev := range eventsByContract[cleanNum] {
-					bDate := ev.BlockDate
-
-					// Checagem da Soberania do Boleto (Opção 1) e Identificação de Débito Herdado:
-					// Se o cliente ainda possui em aberto a fatura causadora do bloqueio desta coorte
-					// (vencimento entre 90 dias antes e 15 dias após a data do bloqueio do evento),
-					// ele NUNCA regularizou o débito original.
-					hasOpenCohortInvoice := false
-					isInheritedDebt := false
-					origDueDate := ""
-					debtLabel := ""
-
-					if !bDate.IsZero() {
-						maxDueDate := bDate.AddDate(0, 0, 15).Format("2006-01-02")
-						minDueDate := bDate.AddDate(0, 0, -90).Format("2006-01-02")
-						cohortMonthStart := ev.Competencia + "-01"
-						hasCurrentOrFutureInvoice := false
-						var oldestDueDate string
-
-						var docs []openDocInfo
-						if d, ok := openInvoicesByContract[cleanNum]; ok {
-							docs = append(docs, d...)
-						}
-						if d, ok := openInvoicesByClient[cleanCli]; ok {
-							docs = append(docs, d...)
-						}
-						for _, d := range docs {
-							if d.DueDate >= minDueDate && d.DueDate <= maxDueDate {
-								hasOpenCohortInvoice = true
-								if oldestDueDate == "" || d.DueDate < oldestDueDate {
-									oldestDueDate = d.DueDate
-								}
-								if d.DueDate >= cohortMonthStart {
-									hasCurrentOrFutureInvoice = true
-								}
-							}
-						}
-
-						// Se deve a fatura, mas NÃO tem nenhuma fatura no mês da coorte (todas anteriores),
-						// a inadimplência é herdada de ciclo anterior (ex: renegociação não quitada no RBX)
-						if hasOpenCohortInvoice && !hasCurrentOrFutureInvoice && oldestDueDate != "" {
-							isInheritedDebt = true
-							origDueDate = oldestDueDate
-							parts := strings.Split(oldestDueDate, "-")
-							displayDate := oldestDueDate
-							if len(parts) == 3 {
-								displayDate = parts[2] + "/" + parts[1] + "/" + parts[0]
-							}
-							debtLabel = fmt.Sprintf("Débito Herdado: %s (Renegociado RBX)", displayDate)
-						}
-					}
-
-					// Determina desfecho no EVAD:
-					evadStatus := "blocked"
-					if res.StatusCode == "A" || res.StatusCode == "D" {
-						evadStatus = "returned"
-					} else if res.StatusCode == "C" || res.StatusCode == "N" {
-						reasonUpper := strings.ToUpper(res.CancellationReason)
-
-						isAdministrative := strings.Contains(reasonUpper, "AJUSTE T") ||
-							strings.Contains(reasonUpper, "AJUSTE TECNICO") ||
-							strings.Contains(reasonUpper, "MIGRA") ||
-							strings.Contains(reasonUpper, "TITULARIDADE") ||
-							strings.Contains(reasonUpper, "NOVO ENDERE")
-
-						// "SEM USO": O comercial esclareceu que o cliente só estava pagando mas não estava usando o ponto de internet,
-						// decidindo cancelar formalmente. É Churn real, nunca administrativo e nunca retorno à base.
-						isSemUso := strings.Contains(reasonUpper, "SEM USO")
-
-						isLateCancellation := false
-						if res.LastOperationDate != nil && !bDate.IsZero() {
-							daysAfterBlock := res.LastOperationDate.Sub(bDate).Hours() / 24
-							if daysAfterBlock > 35 {
-								isLateCancellation = true
-							}
-						}
-
-						if hasOpenCohortInvoice || isSemUso {
-							isLateCancellation = false
-						}
-
-						if (isAdministrative || isLateCancellation) && !isSemUso {
-							evadStatus = "returned"
-						} else {
-							evadStatus = "churned"
-						}
-					} else if res.StatusCode == "S" {
-						isSubsequentSuspension := false
-						if res.LastOperationDate != nil && !bDate.IsZero() {
-							daysAfterBlock := res.LastOperationDate.Sub(bDate).Hours() / 24
-							if daysAfterBlock > 25 {
-								isSubsequentSuspension = true
-							}
-						}
-
-						// Regra da Soberania do Boleto (Opção 1):
-						if hasOpenCohortInvoice {
-							isSubsequentSuspension = false
-						}
-
-						if isSubsequentSuspension {
-							evadStatus = "returned"
-						} else {
-							evadStatus = "suspended"
-						}
-					} else if res.StatusCode == "B" || res.StatusCode == "P" {
-						isSubsequentBlock := false
-						if res.LastOperationDate != nil && !bDate.IsZero() {
-							daysAfterBlock := res.LastOperationDate.Sub(bDate).Hours() / 24
-							if daysAfterBlock > 35 {
-								isSubsequentBlock = true
-							}
-						}
-
-						if hasOpenCohortInvoice {
-							isSubsequentBlock = false
-						}
-
-						if isSubsequentBlock {
-							evadStatus = "returned"
-						} else {
-							evadStatus = "blocked"
-						}
-					} else {
-						evadStatus = "other"
-					}
-
-					syncStats["total"]++
-					switch evadStatus {
-					case "returned":
-						syncStats["active"]++
-					case "blocked":
-						syncStats["blocked"]++
-					case "churned":
-						syncStats["churned"]++
-					case "suspended":
-						syncStats["suspended"]++
-					default:
-						syncStats["other"]++
-					}
-
-					// Atualiza especificamente este evento pelo ID único do evento de bloqueio
-					if evadStatus == "returned" {
-						var unblockTime time.Time
-						if res.StatusCode == "C" || res.StatusCode == "N" || res.StatusCode == "B" || res.StatusCode == "P" || res.StatusCode == "S" {
-							if !bDate.IsZero() {
-								unblockTime = bDate.AddDate(0, 0, 7)
-							} else {
-								unblockTime = now
-							}
-						} else {
-							unblockTime = now
-							if res.LastOperationDate != nil {
-								unblockTime = *res.LastOperationDate
-							}
-						}
-
-						_, _ = dbPool.Exec(ctx, `
-							UPDATE eventos_bloqueio SET
-								status_rbx_codigo = $1,
-								status_rbx_descricao = $2,
-								motivo_cancelamento = $3,
-								dias_vencido = $4,
-								status_desfecho = 'returned',
-								data_desbloqueio = COALESCE(data_desbloqueio, $5),
-								dias_para_resolver = COALESCE(dias_para_resolver, GREATEST(0, EXTRACT(DAY FROM ($5 - data_bloqueio))::INT)),
-								ultima_operacao_rbx = $6,
-								sincronizado_em = $7,
-								eh_debito_herdado = $8,
-								vencimento_debito_original = $9,
-								rotulo_debito = $10
-							WHERE id = $11
-						`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, unblockTime, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
-					} else if evadStatus == "churned" {
-						_, _ = dbPool.Exec(ctx, `
-							UPDATE eventos_bloqueio SET
-								status_rbx_codigo = $1,
-								status_rbx_descricao = $2,
-								motivo_cancelamento = $3,
-								dias_vencido = $4,
-								status_desfecho = 'churned',
-								data_desbloqueio = NULL,
-								dias_para_resolver = NULL,
-								ultima_operacao_rbx = $5,
-								sincronizado_em = $6,
-								eh_debito_herdado = $7,
-								vencimento_debito_original = $8,
-								rotulo_debito = $9
-							WHERE id = $10
-						`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
-					} else {
-						_, _ = dbPool.Exec(ctx, `
-							UPDATE eventos_bloqueio SET
-								status_rbx_codigo = $1,
-								status_rbx_descricao = $2,
-								motivo_cancelamento = $3,
-								dias_vencido = $4,
-								status_desfecho = $5,
-								data_desbloqueio = NULL,
-								dias_para_resolver = NULL,
-								ultima_operacao_rbx = $6,
-								sincronizado_em = $7,
-								eh_debito_herdado = $8,
-								vencimento_debito_original = $9,
-								rotulo_debito = $10
-							WHERE id = $11
-						`, res.StatusCode, res.StatusText, res.CancellationReason, res.DaysOverdue, evadStatus, lastOpDate, now, isInheritedDebt, origDueDate, debtLabel, ev.ID)
-					}
-				}
-			}
-		}
-
-		// Vinculação pós-sincronização de Mimos aos Contratos Principais:
-		// 1. Aponta contrato_principal nos contratos mimos
-		_, _ = dbPool.Exec(ctx, `
-			UPDATE eventos_bloqueio m
-			SET contrato_principal = p.contrato
-			FROM (
-				SELECT DISTINCT ON (codigo_rbx, mes_competencia) codigo_rbx, mes_competencia, contrato
-				FROM eventos_bloqueio
-				WHERE (eh_mimo IS FALSE OR eh_mimo IS NULL) AND valor_mensalidade > 0
-				ORDER BY codigo_rbx, mes_competencia, valor_mensalidade DESC
-			) p
-			WHERE m.eh_mimo IS TRUE 
-			  AND m.codigo_rbx = p.codigo_rbx 
-			  AND m.mes_competencia = p.mes_competencia
-		`)
-
-		// 2. Registra a lista de mimos vinculados no contrato principal de internet
-		_, _ = dbPool.Exec(ctx, `
-			UPDATE eventos_bloqueio p
-			SET mimos_vinculados = m.nomes_mimos
-			FROM (
-				SELECT codigo_rbx, mes_competencia, STRING_AGG(DISTINCT plano, ', ') as nomes_mimos
-				FROM eventos_bloqueio
-				WHERE eh_mimo IS TRUE AND plano IS NOT NULL AND plano != ''
-				GROUP BY codigo_rbx, mes_competencia
-			) m
-			WHERE (p.eh_mimo IS FALSE OR p.eh_mimo IS NULL)
-			  AND p.codigo_rbx = m.codigo_rbx 
-			  AND p.mes_competencia = m.mes_competencia
-		`)
-
-		if syncStats["total"] == 0 && lastError != nil {
-			errMessage := lastError.Error()
-			_, _ = dbPool.Exec(ctx, `
-				UPDATE configuracoes_rbx SET 
-					status_conexao = 'erro', 
-					ultimo_erro = $1,
-					atualizado_em = CURRENT_TIMESTAMP 
-				WHERE id = 1
-			`, errMessage)
-
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   errMessage,
+				"error":   err.Error(),
 			})
 			return
 		}
 
-		// Atualiza timestamp da última sincronização
-		_, _ = dbPool.Exec(ctx, `
-			UPDATE configuracoes_rbx SET 
-				last_sync_at = $1, 
-				status_conexao = 'conectado', 
-				ultimo_erro = '',
-				atualizado_em = CURRENT_TIMESTAMP 
-			WHERE id = 1
-		`, now)
-
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success":    true,
-			"message":    fmt.Sprintf("Sincronização RBX concluída: %d contratos consultados!", syncStats["total"]),
-			"lastSyncAt": now.Format("02/01/2006 15:04:05"),
-			"stats":      syncStats,
-		})
+		json.NewEncoder(w).Encode(res)
 	})
 
 	r.Post("/api/rbx/sync-bairros", func(w http.ResponseWriter, r *http.Request) {
