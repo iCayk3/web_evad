@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, AlertCircle, Loader2, Eye, EyeOff, Radio, RefreshCw, KeyRound, ExternalLink, Clock } from 'lucide-react';
+import { X, CheckCircle2, AlertCircle, Loader2, Eye, EyeOff, Radio, RefreshCw, KeyRound, ExternalLink, Clock, MapPin } from 'lucide-react';
 import { API_BASE } from '../config/api';
 
 interface RbxConfigModalProps {
@@ -24,6 +24,8 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncingBairros, setSyncingBairros] = useState(false);
+  const [bairroSyncMsg, setBairroSyncMsg] = useState<{ text: string; isError: boolean } | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -126,6 +128,34 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
       console.error(err);
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleSyncBairros = async () => {
+    setSyncingBairros(true);
+    setBairroSyncMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/rbx/sync-bairros`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setBairroSyncMsg({
+          text: data.message || 'Bairros/Vilas sincronizados com sucesso!',
+          isError: false,
+        });
+        onSaved();
+      } else {
+        setBairroSyncMsg({
+          text: data.error || 'Erro ao sincronizar bairros do RBX.',
+          isError: true,
+        });
+      }
+    } catch (err: any) {
+      setBairroSyncMsg({
+        text: `Erro ao conectar com API: ${err.message}`,
+        isError: true,
+      });
+    } finally {
+      setSyncingBairros(false);
     }
   };
 
@@ -332,6 +362,23 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
               </div>
             )}
 
+            {bairroSyncMsg && (
+              <div
+                className={`p-2.5 rounded-lg border text-xs flex items-center space-x-2 ${
+                  !bairroSyncMsg.isError
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                }`}
+              >
+                {!bairroSyncMsg.isError ? (
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                )}
+                <span>{bairroSyncMsg.text}</span>
+              </div>
+            )}
+
             {/* Docs link */}
             <div className="pt-1 text-[11px] text-slate-500 flex items-center justify-between border-t border-slate-100">
               <a
@@ -369,15 +416,28 @@ export const RbxConfigModal: React.FC<RbxConfigModalProps> = ({ isOpen, onClose,
 
               <div className="flex items-center space-x-2 w-full sm:w-auto justify-end">
                 {statusConexao === 'conectado' && (
-                  <button
-                    type="button"
-                    disabled={syncing}
-                    onClick={handleManualSync}
-                    className="px-3 py-1.5 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-50"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
-                    <span>Sincronizar</span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      disabled={syncingBairros}
+                      onClick={handleSyncBairros}
+                      title="Consulta o cadastro de clientes no RBX para preencher os Bairros/Vilas que estiverem Não Informados"
+                      className="px-3 py-1.5 border border-blue-200 bg-blue-50/60 hover:bg-blue-100/70 text-blue-800 rounded-md text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-50"
+                    >
+                      <MapPin className={`h-3.5 w-3.5 ${syncingBairros ? 'animate-bounce' : 'text-blue-600'}`} />
+                      <span>{syncingBairros ? 'Bairros...' : 'Sincronizar Bairros'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={syncing}
+                      onClick={handleManualSync}
+                      className="px-3 py-1.5 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                      <span>Sincronizar</span>
+                    </button>
+                  </>
                 )}
 
                 <button
