@@ -204,6 +204,7 @@ export const ClientsTable: React.FC<ClientsTableProps> = ({
         c.rbxCode.toLowerCase().includes(term) ||
         c.contract.toLowerCase().includes(term) ||
         c.city.toLowerCase().includes(term) ||
+        (c.neighborhood && c.neighborhood.toLowerCase().includes(term)) ||
         c.plan.toLowerCase().includes(term) ||
         c.userRbx.toLowerCase().includes(term) ||
         (c.rbxStatusText && c.rbxStatusText.toLowerCase().includes(term)) ||
@@ -892,7 +893,14 @@ export const ClientsTable: React.FC<ClientsTableProps> = ({
                     )}
                   </td>
                   <td className="py-2.5 px-3 text-slate-600 whitespace-nowrap">
-                    {client.city}
+                    <div className="flex flex-col">
+                      <span className="font-medium text-slate-800">{client.city || '—'}</span>
+                      {client.neighborhood && (
+                        <span className="text-[11px] text-slate-500 font-normal">
+                          {client.neighborhood}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-2.5 px-3 whitespace-nowrap">
                     {renderRbxBadge(client)}

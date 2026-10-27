@@ -21,6 +21,7 @@ export function BreakdownTable({
   emptyMessage = 'Nenhum dado encontrado para esta segmentação.',
 }: BreakdownTableProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCity, setSelectedCity] = useState('all');
   const [sortField, setSortField] = useState<SortField>('totalBlocked');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
 
@@ -33,11 +34,27 @@ export function BreakdownTable({
     }
   };
 
+  // Detect unique cities if available in items (e.g. for Bairro / Vila)
+  const uniqueCities = useMemo(() => {
+    const set = new Set<string>();
+    items.forEach((i) => {
+      if (i.city && i.city.trim() !== '') set.add(i.city.trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
+  const cityFilteredItems = useMemo(() => {
+    if (selectedCity === 'all') return items;
+    return items.filter((item) => item.city === selectedCity);
+  }, [items, selectedCity]);
+
   const filteredItems = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
-    const filtered = items.filter((item) =>
-      item.name.toLowerCase().includes(term)
-    );
+    const filtered = cityFilteredItems.filter((item) => {
+      const matchName = item.name.toLowerCase().includes(term);
+      const matchCity = item.city ? item.city.toLowerCase().includes(term) : false;
+      return matchName || matchCity;
+    });
 
     return filtered.sort((a, b) => {
       let valA = a[sortField];
@@ -56,22 +73,22 @@ export function BreakdownTable({
       if (numA > numB) return sortOrder === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [items, searchTerm, sortField, sortOrder]);
+  }, [cityFilteredItems, searchTerm, sortField, sortOrder]);
 
-  // Overall totals
+  // Overall totals for the active city filter
   const totals = useMemo(() => {
-    const totalBlocked = items.reduce((acc, i) => acc + i.totalBlocked, 0);
-    const totalMrr = items.reduce((acc, i) => acc + i.totalMrr, 0);
-    const returnedCount = items.reduce((acc, i) => acc + i.returnedCount, 0);
-    const returnedMrr = items.reduce((acc, i) => acc + i.returnedMrr, 0);
-    const churnedCount = items.reduce((acc, i) => acc + i.churnedCount, 0);
-    const churnedMrr = items.reduce((acc, i) => acc + i.churnedMrr, 0);
-    const suspendedCount = items.reduce((acc, i) => acc + i.suspendedCount, 0);
-    const stillBlockedCount = items.reduce((acc, i) => acc + i.stillBlockedCount, 0);
+    const totalBlocked = cityFilteredItems.reduce((acc, i) => acc + i.totalBlocked, 0);
+    const totalMrr = cityFilteredItems.reduce((acc, i) => acc + i.totalMrr, 0);
+    const returnedCount = cityFilteredItems.reduce((acc, i) => acc + i.returnedCount, 0);
+    const returnedMrr = cityFilteredItems.reduce((acc, i) => acc + i.returnedMrr, 0);
+    const churnedCount = cityFilteredItems.reduce((acc, i) => acc + i.churnedCount, 0);
+    const churnedMrr = cityFilteredItems.reduce((acc, i) => acc + i.churnedMrr, 0);
+    const suspendedCount = cityFilteredItems.reduce((acc, i) => acc + i.suspendedCount, 0);
+    const stillBlockedCount = cityFilteredItems.reduce((acc, i) => acc + i.stillBlockedCount, 0);
 
     let daysSum = 0;
     let daysWeight = 0;
-    items.forEach((i) => {
+    cityFilteredItems.forEach((i) => {
       if (i.avgDaysToReturn > 0 && i.returnedCount > 0) {
         daysSum += i.avgDaysToReturn * i.returnedCount;
         daysWeight += i.returnedCount;
@@ -95,7 +112,7 @@ export function BreakdownTable({
       stillBlockedCount,
       avgDays,
     };
-  }, [items]);
+  }, [cityFilteredItems]);
 
   const renderSortIcon = (field: SortField) => {
     if (sortField !== field) {
@@ -117,8 +134,23 @@ export function BreakdownTable({
           {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
         </div>
 
-        <div className="flex items-center space-x-2">
-          <div className="relative w-full sm:w-64">
+        <div className="flex flex-wrap items-center gap-2">
+          {uniqueCities.length > 0 && (
+            <select
+              value={selectedCity}
+              onChange={(e) => setSelectedCity(e.target.value)}
+              className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-md bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-900 cursor-pointer font-medium"
+            >
+              <option value="all">Todas as Cidades ({uniqueCities.length})</option>
+              {uniqueCities.map((city) => (
+                <option key={city} value={city}>
+                  {city}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <div className="relative w-full sm:w-60">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
             <input
               type="text"
@@ -200,6 +232,11 @@ export function BreakdownTable({
                     <td className="py-2.5 px-4 font-medium text-slate-900">
                       <div className="flex items-center space-x-2">
                         <span>{item.name}</span>
+                        {item.city && (
+                          <span className="text-[10px] bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded font-normal whitespace-nowrap">
+                            {item.city}
+                          </span>
+                        )}
                         {shareOfTotal >= 20 && (
                           <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-normal">
                             {shareOfTotal}% vol
@@ -268,7 +305,10 @@ export function BreakdownTable({
           {items.length > 0 && (
             <tfoot>
               <tr className="bg-slate-100/90 border-t-2 border-slate-300 font-semibold text-slate-900 text-xs">
-                <td className="py-3 px-4">Total Consolidado ({items.length} {dimensionName.toLowerCase()}s)</td>
+                <td className="py-3 px-4">
+                  Total Consolidado ({cityFilteredItems.length} {dimensionName.toLowerCase()}s
+                  {selectedCity !== 'all' ? ` em ${selectedCity}` : ''})
+                </td>
                 <td className="py-3 px-3 text-right">{totals.totalBlocked.toLocaleString('pt-BR')}</td>
                 <td className="py-3 px-3 text-right font-mono">
                   R$ {totals.totalMrr.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

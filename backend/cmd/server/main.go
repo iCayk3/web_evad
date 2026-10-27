@@ -54,6 +54,7 @@ type ClientRecord struct {
 	IsMimo              bool    `json:"isMimo"`
 	PrimaryContract     string  `json:"primaryContract"`
 	LinkedMimos         string  `json:"linkedMimos"`
+	Neighborhood        string  `json:"neighborhood"` // Bairro / Vila
 }
 
 type MonthlyCohortSummary struct {
@@ -90,6 +91,7 @@ type MonthlyCohortSummary struct {
 
 type BreakdownItem struct {
 	Name              string  `json:"name"`
+	City              string  `json:"city,omitempty"`
 	TotalBlocked      int     `json:"totalBlocked"`
 	TotalMrr          float64 `json:"totalMrr"`
 	ReturnedCount     int     `json:"returnedCount"`
@@ -112,6 +114,7 @@ type MonthlyAnalyticsResponse struct {
 	Summary         MonthlyCohortSummary `json:"summary"`
 	ByPlan          []BreakdownItem      `json:"byPlan"`
 	ByCity          []BreakdownItem      `json:"byCity"`
+	ByNeighborhood  []BreakdownItem      `json:"byNeighborhood"`
 	ByCycle         []BreakdownItem      `json:"byCycle"`
 	AvailableMonths []string             `json:"availableMonths"`
 }
@@ -143,6 +146,7 @@ type AnnualAnalyticsResponse struct {
 	MonthlyEvolution []MonthSummaryItem   `json:"monthlyEvolution"`
 	ByPlan           []BreakdownItem      `json:"byPlan"`
 	ByCity           []BreakdownItem      `json:"byCity"`
+	ByNeighborhood   []BreakdownItem      `json:"byNeighborhood"`
 	ByCycle          []BreakdownItem      `json:"byCycle"`
 	AvailableYears   []string             `json:"availableYears"`
 }
@@ -183,6 +187,10 @@ func initDB() {
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS eh_mimo BOOLEAN DEFAULT false;
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS contrato_principal VARCHAR(50);
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS mimos_vinculados TEXT;
+		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
+		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
+		CREATE INDEX IF NOT EXISTS idx_clientes_bairro ON clientes(bairro);
+		CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);
 
@@ -412,7 +420,8 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 			COALESCE(e.rotulo_debito, '') as rotulo_debito,
 			COALESCE(e.eh_mimo, FALSE) as eh_mimo,
 			COALESCE(e.contrato_principal, '') as contrato_principal,
-			COALESCE(e.mimos_vinculados, '') as mimos_vinculados
+			COALESCE(e.mimos_vinculados, '') as mimos_vinculados,
+			COALESCE(NULLIF(e.bairro, ''), c.bairro, '') as bairro
 		FROM eventos_bloqueio e
 		JOIN clientes c ON c.codigo_rbx = e.codigo_rbx
 		WHERE %s
@@ -444,6 +453,7 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 			&daysOverdue, &syncAt, &lastOp,
 			&cr.IsInheritedDebt, &cr.OriginalDebtDueDate, &cr.DebtLabel,
 			&cr.IsMimo, &cr.PrimaryContract, &cr.LinkedMimos,
+			&cr.Neighborhood,
 		); err != nil {
 			log.Printf("[DB ERROR scan] %v", err)
 			continue
@@ -459,7 +469,7 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 	return list, nil
 }
 
-func queryBreakdown(ctx context.Context, dimensionExpr string, filterCondition string, filterArg string, viewMode string) ([]BreakdownItem, error) {
+func queryBreakdown(ctx context.Context, dimensionExpr string, cityExpr string, filterCondition string, filterArg string, viewMode string) ([]BreakdownItem, error) {
 	if dbPool == nil {
 		return nil, nil
 	}
@@ -473,9 +483,18 @@ func queryBreakdown(ctx context.Context, dimensionExpr string, filterCondition s
 
 	feeExpr := "CASE WHEN e.eh_mimo IS TRUE THEN 0 ELSE COALESCE(NULLIF(e.valor_mensalidade, 0), c.valor_mensalidade, 0) END"
 
+	var selectCity, groupByClause string
+	if cityExpr != "" {
+		selectCity = fmt.Sprintf(", %s AS city_name", cityExpr)
+		groupByClause = "GROUP BY item_name, city_name"
+	} else {
+		selectCity = ", '' AS city_name"
+		groupByClause = "GROUP BY item_name"
+	}
+
 	query := fmt.Sprintf(`
 		SELECT 
-			%s AS item_name,
+			%s AS item_name%s,
 			COUNT(e.id) AS total_blocked,
 			COALESCE(SUM(%s), 0) AS total_mrr,
 			COUNT(CASE WHEN e.status_desfecho = 'returned' THEN 1 END) AS returned_count,
@@ -490,9 +509,9 @@ func queryBreakdown(ctx context.Context, dimensionExpr string, filterCondition s
 		FROM eventos_bloqueio e
 		JOIN clientes c ON c.codigo_rbx = e.codigo_rbx
 		WHERE %s
-		GROUP BY item_name
+		%s
 		ORDER BY total_blocked DESC
-	`, dimensionExpr, feeExpr, feeExpr, feeExpr, feeExpr, feeExpr, whereClause)
+	`, dimensionExpr, selectCity, feeExpr, feeExpr, feeExpr, feeExpr, feeExpr, whereClause, groupByClause)
 
 	rows, err := dbPool.Query(ctx, query, filterArg)
 	if err != nil {
@@ -506,7 +525,7 @@ func queryBreakdown(ctx context.Context, dimensionExpr string, filterCondition s
 		var bi BreakdownItem
 		var avgDays float64
 		if err := rows.Scan(
-			&bi.Name, &bi.TotalBlocked, &bi.TotalMrr,
+			&bi.Name, &bi.City, &bi.TotalBlocked, &bi.TotalMrr,
 			&bi.ReturnedCount, &bi.ReturnedMrr,
 			&bi.ChurnedCount, &bi.ChurnedMrr,
 			&bi.SuspendedCount, &bi.SuspendedMrr,
@@ -1023,9 +1042,10 @@ func main() {
 					UPDATE eventos_bloqueio SET
 						plano = CASE WHEN $1 != '' THEN $1 ELSE plano END,
 						valor_mensalidade = $2,
-						eh_mimo = $3
+						eh_mimo = $3,
+						bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END
 					WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4
-				`, res.Plan, res.MonthlyFee, isMimo, cleanNum)
+				`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood)
 
 				// Atualiza dados do cliente no cadastro
 				// REGRA CRÍTICA: Contratos Mimo (R$ 0,00) NUNCA sobrescrevem a mensalidade ou o plano principal de internet!
@@ -1036,16 +1056,18 @@ func main() {
 							plano = CASE WHEN $2 != '' THEN $2 ELSE plano END,
 							contrato = CASE WHEN $3 != '' THEN $3 ELSE contrato END,
 							cidade = CASE WHEN $4 != '' THEN $4 ELSE cidade END,
-							nome = CASE WHEN $5 != '' THEN $5 ELSE nome END
+							nome = CASE WHEN $5 != '' THEN $5 ELSE nome END,
+							bairro = CASE WHEN $8 != '' THEN $8 ELSE bairro END
 						WHERE (codigo_rbx = $6 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $7)
-					`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum)
+					`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
 				} else {
 					_, _ = dbPool.Exec(ctx, `
 						UPDATE clientes SET
 							cidade = CASE WHEN (cidade IS NULL OR cidade = '') AND $1 != '' THEN $1 ELSE cidade END,
-							nome = CASE WHEN (nome IS NULL OR nome = '') AND $2 != '' THEN $2 ELSE nome END
+							nome = CASE WHEN (nome IS NULL OR nome = '') AND $2 != '' THEN $2 ELSE nome END,
+							bairro = CASE WHEN (bairro IS NULL OR bairro = '') AND $5 != '' THEN $5 ELSE bairro END
 						WHERE (codigo_rbx = $3 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4)
-					`, res.City, res.ClientName, cleanCli, cleanNum)
+					`, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
 				}
 
 				var lastOpDate *time.Time = res.LastOperationDate
@@ -1330,6 +1352,145 @@ func main() {
 		})
 	})
 
+	r.Post("/api/rbx/sync-bairros", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+
+		var rbxURL, rbxToken, rbxVersion string
+		err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+		if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
+			http.Error(w, `{"error": "Integração RBX não configurada."}`, http.StatusBadRequest)
+			return
+		}
+
+		client := rbx.NewClient(rbx.Config{
+			URL:     rbxURL,
+			Token:   rbxToken,
+			Version: rbxVersion,
+		})
+
+		rows, err := dbPool.Query(ctx, `
+			SELECT DISTINCT codigo_rbx 
+			FROM clientes 
+			WHERE codigo_rbx IS NOT NULL AND codigo_rbx != '' 
+			ORDER BY codigo_rbx
+		`)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar clientes: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var allCodes []string
+		for rows.Next() {
+			var cod string
+			if err := rows.Scan(&cod); err == nil && strings.TrimSpace(cod) != "" {
+				allCodes = append(allCodes, strings.TrimSpace(cod))
+			}
+		}
+
+		log.Printf("[RBX SYNC BAIRROS] Iniciando sincronização de bairros/vilas para %d clientes cadastrados...", len(allCodes))
+
+		updatedClients := 0
+		batchSize := 100
+		for i := 0; i < len(allCodes); i += batchSize {
+			end := i + batchSize
+			if end > len(allCodes) {
+				end = len(allCodes)
+			}
+			chunk := allCodes[i:end]
+
+			addrMap, err := client.ConsultarClientes(ctx, chunk)
+			if err != nil {
+				log.Printf("[RBX SYNC BAIRROS] Erro no lote %d-%d: %v", i, end, err)
+				continue
+			}
+
+			for code, info := range addrMap {
+				if info.Neighborhood != "" || info.City != "" {
+					_, err := dbPool.Exec(ctx, `
+						UPDATE clientes SET
+							bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
+							cidade = CASE WHEN (cidade IS NULL OR cidade = '' OR cidade = 'Não Informado') AND $2 != '' THEN $2 ELSE cidade END
+						WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
+					`, info.Neighborhood, info.City, code)
+					if err == nil {
+						updatedClients++
+					}
+				}
+			}
+		}
+
+		cmdTag, err := dbPool.Exec(ctx, `
+			UPDATE eventos_bloqueio e
+			SET bairro = c.bairro
+			FROM clientes c
+			WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+			  AND (e.bairro IS NULL OR e.bairro = '')
+			  AND c.bairro IS NOT NULL AND c.bairro != ''
+		`)
+		updatedEvents := int64(0)
+		if err == nil {
+			updatedEvents = cmdTag.RowsAffected()
+		}
+
+		var remainingContracts []string
+		cRows, err := dbPool.Query(ctx, `
+			SELECT DISTINCT REPLACE(REPLACE(contrato, '.', ''), ',', '')
+			FROM eventos_bloqueio
+			WHERE (bairro IS NULL OR bairro = '') AND contrato IS NOT NULL AND contrato != ''
+			LIMIT 500
+		`)
+		if err == nil {
+			defer cRows.Close()
+			for cRows.Next() {
+				var ct string
+				if err := cRows.Scan(&ct); err == nil && ct != "" {
+					remainingContracts = append(remainingContracts, ct)
+				}
+			}
+		}
+
+		if len(remainingContracts) > 0 {
+			cBatchSize := 50
+			for i := 0; i < len(remainingContracts); i += cBatchSize {
+				end := i + cBatchSize
+				if end > len(remainingContracts) {
+					end = len(remainingContracts)
+				}
+				cChunk := remainingContracts[i:end]
+				cResults, cErr := client.ConsultarContratos(ctx, cChunk)
+				if cErr == nil {
+					for _, cr := range cResults {
+						if cr.Neighborhood != "" {
+							cleanCt := strings.ReplaceAll(strings.ReplaceAll(cr.ContractCode, ".", ""), ",", "")
+							_, _ = dbPool.Exec(ctx, `
+								UPDATE eventos_bloqueio SET bairro = $1 WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $2
+							`, cr.Neighborhood, cleanCt)
+							_, _ = dbPool.Exec(ctx, `
+								UPDATE clientes SET bairro = $1 WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $2 AND (bairro IS NULL OR bairro = '')
+							`, cr.Neighborhood, cleanCt)
+						}
+					}
+				}
+			}
+		}
+
+		log.Printf("[RBX SYNC BAIRROS] Sincronização concluída! Clientes atualizados: %d, Eventos atualizados: %d", updatedClients, updatedEvents)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":        true,
+			"updatedClients": updatedClients,
+			"updatedEvents":  updatedEvents,
+			"message":        fmt.Sprintf("Sincronização concluída com sucesso! Bairros/Vilas atualizados para %d clientes e %d eventos.", updatedClients, updatedEvents),
+		})
+	})
+
 	r.Get("/api/analytics/cohort", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		month := r.URL.Query().Get("month")
@@ -1375,17 +1536,23 @@ func main() {
 
 		planDimension := "COALESCE(NULLIF(TRIM(COALESCE(NULLIF(e.plano, ''), c.plano)), ''), 'Não Informado')"
 		cityDimension := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')"
+		neighborhoodDimension := "COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(e.bairro, ''), c.bairro))), ''), 'Não Informado')"
 		cycleDimension := "e.ciclo_vencimento"
+		cityExpr := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), '')"
 
-		byPlan, _ := queryBreakdown(ctx, planDimension, "e.mes_competencia = $1", month, viewMode)
-		byCity, _ := queryBreakdown(ctx, cityDimension, "e.mes_competencia = $1", month, viewMode)
-		byCycle, _ := queryBreakdown(ctx, cycleDimension, "e.mes_competencia = $1", month, viewMode)
+		byPlan, _ := queryBreakdown(ctx, planDimension, "", "e.mes_competencia = $1", month, viewMode)
+		byCity, _ := queryBreakdown(ctx, cityDimension, "", "e.mes_competencia = $1", month, viewMode)
+		byNeighborhood, _ := queryBreakdown(ctx, neighborhoodDimension, cityExpr, "e.mes_competencia = $1", month, viewMode)
+		byCycle, _ := queryBreakdown(ctx, cycleDimension, "", "e.mes_competencia = $1", month, viewMode)
 
 		if byPlan == nil {
 			byPlan = []BreakdownItem{}
 		}
 		if byCity == nil {
 			byCity = []BreakdownItem{}
+		}
+		if byNeighborhood == nil {
+			byNeighborhood = []BreakdownItem{}
 		}
 		if byCycle == nil {
 			byCycle = []BreakdownItem{}
@@ -1397,6 +1564,7 @@ func main() {
 			Summary:         summary,
 			ByPlan:          byPlan,
 			ByCity:          byCity,
+			ByNeighborhood:  byNeighborhood,
 			ByCycle:         byCycle,
 			AvailableMonths: availableMonths,
 		}
@@ -1425,17 +1593,23 @@ func main() {
 		// 1. Quebras consolidadas do ano todo
 		planDimension := "COALESCE(NULLIF(TRIM(COALESCE(NULLIF(e.plano, ''), c.plano)), ''), 'Não Informado')"
 		cityDimension := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')"
+		neighborhoodDimension := "COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(e.bairro, ''), c.bairro))), ''), 'Não Informado')"
 		cycleDimension := "e.ciclo_vencimento"
+		cityExpr := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), '')"
 
-		byPlan, _ := queryBreakdown(ctx, planDimension, "e.mes_competencia LIKE $1", filterYear, viewMode)
-		byCity, _ := queryBreakdown(ctx, cityDimension, "e.mes_competencia LIKE $1", filterYear, viewMode)
-		byCycle, _ := queryBreakdown(ctx, cycleDimension, "e.mes_competencia LIKE $1", filterYear, viewMode)
+		byPlan, _ := queryBreakdown(ctx, planDimension, "", "e.mes_competencia LIKE $1", filterYear, viewMode)
+		byCity, _ := queryBreakdown(ctx, cityDimension, "", "e.mes_competencia LIKE $1", filterYear, viewMode)
+		byNeighborhood, _ := queryBreakdown(ctx, neighborhoodDimension, cityExpr, "e.mes_competencia LIKE $1", filterYear, viewMode)
+		byCycle, _ := queryBreakdown(ctx, cycleDimension, "", "e.mes_competencia LIKE $1", filterYear, viewMode)
 
 		if byPlan == nil {
 			byPlan = []BreakdownItem{}
 		}
 		if byCity == nil {
 			byCity = []BreakdownItem{}
+		}
+		if byNeighborhood == nil {
+			byNeighborhood = []BreakdownItem{}
 		}
 		if byCycle == nil {
 			byCycle = []BreakdownItem{}
@@ -1569,6 +1743,7 @@ func main() {
 			MonthlyEvolution: evolution,
 			ByPlan:           byPlan,
 			ByCity:           byCity,
+			ByNeighborhood:   byNeighborhood,
 			ByCycle:          byCycle,
 			AvailableYears:   availableYears,
 		}
@@ -1673,6 +1848,7 @@ func main() {
 		colUser := -1
 		colOperation := -1
 		colCity := -1
+		colNeighborhood := -1
 
 		for i, h := range headerRow {
 			norm := normalizeHeader(h)
@@ -1692,6 +1868,8 @@ func main() {
 				colOperation = i
 			} else if colCity == -1 && strings.Contains(norm, "cidade") {
 				colCity = i
+			} else if colNeighborhood == -1 && (strings.Contains(norm, "bairro") || strings.Contains(norm, "vila")) {
+				colNeighborhood = i
 			}
 		}
 
@@ -1705,14 +1883,15 @@ func main() {
 		if colCity == -1 && len(headerRow) > 7 { colCity = 7 }
 
 		type RawEvent struct {
-			DateTime  time.Time
-			Client    string
-			Name      string
-			Contract  string
-			Plan      string
-			User      string
-			Operation string
-			City      string
+			DateTime     time.Time
+			Client       string
+			Name         string
+			Contract     string
+			Plan         string
+			User         string
+			Operation    string
+			City         string
+			Neighborhood string
 		}
 
 		events := make([]RawEvent, 0)
@@ -1740,6 +1919,7 @@ func main() {
 			userStr := getVal(colUser)
 			opStr := getVal(colOperation)
 			cityStr := getVal(colCity)
+			neighborhoodStr := getVal(colNeighborhood)
 
 			if nameStr == "" && clientStr == "" {
 				continue
@@ -1762,14 +1942,15 @@ func main() {
 			detectedCompetenceMap[compMonth]++
 
 			events = append(events, RawEvent{
-				DateTime:  dt,
-				Client:    clientStr,
-				Name:      nameStr,
-				Contract:  contractStr,
-				Plan:      planStr,
-				User:      userStr,
-				Operation: opStr,
-				City:      cityStr,
+				DateTime:     dt,
+				Client:       clientStr,
+				Name:         nameStr,
+				Contract:     contractStr,
+				Plan:         planStr,
+				User:         userStr,
+				Operation:    opStr,
+				City:         cityStr,
+				Neighborhood: neighborhoodStr,
 			})
 		}
 
@@ -1790,6 +1971,7 @@ func main() {
 			Contract      string
 			Plan          string
 			City          string
+			Neighborhood  string
 			User          string
 			BlockEvents   []RawEvent
 			UnblockEvents []RawEvent
@@ -1810,12 +1992,13 @@ func main() {
 			ch, exists := historyMap[key]
 			if !exists {
 				ch = &ContractHistory{
-					Client:   ev.Client,
-					Name:     ev.Name,
-					Contract: ev.Contract,
-					Plan:     ev.Plan,
-					City:     ev.City,
-					User:     ev.User,
+					Client:       ev.Client,
+					Name:         ev.Name,
+					Contract:     ev.Contract,
+					Plan:         ev.Plan,
+					City:         ev.City,
+					Neighborhood: ev.Neighborhood,
+					User:         ev.User,
 				}
 				historyMap[key] = ch
 			}
@@ -1901,6 +2084,7 @@ func main() {
 				Contract:           ch.Contract,
 				Name:               ch.Name,
 				City:               ch.City,
+				Neighborhood:       ch.Neighborhood,
 				Plan:               ch.Plan,
 				MonthlyFee:         99.90,
 				BillingCycle:       cicloName,
@@ -1965,14 +2149,15 @@ func main() {
 
 				// Upsert client using codigo_rbx as primary key (sem deixar mimo sobrescrever o plano principal)
 				_, err := tx.Exec(ctx, `
-					INSERT INTO clientes (codigo_rbx, contrato, nome, cidade, plano, valor_mensalidade, status)
-					VALUES ($1, $2, $3, $4, $5, $6, $7)
+					INSERT INTO clientes (codigo_rbx, contrato, nome, cidade, plano, valor_mensalidade, status, bairro)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 					ON CONFLICT (codigo_rbx) DO UPDATE SET
-						contrato = CASE WHEN NOT $8 THEN EXCLUDED.contrato ELSE clientes.contrato END,
+						contrato = CASE WHEN NOT $9 THEN EXCLUDED.contrato ELSE clientes.contrato END,
 						nome = EXCLUDED.nome,
 						cidade = EXCLUDED.cidade,
-						plano = CASE WHEN NOT $8 THEN EXCLUDED.plano ELSE clientes.plano END
-				`, c.RbxCode, c.Contract, c.Name, c.City, c.Plan, c.MonthlyFee, c.Status, isMimoCandidate)
+						plano = CASE WHEN NOT $9 THEN EXCLUDED.plano ELSE clientes.plano END,
+						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
+				`, c.RbxCode, c.Contract, c.Name, c.City, c.Plan, c.MonthlyFee, c.Status, c.Neighborhood, isMimoCandidate)
 				if err != nil {
 					log.Printf("[DB ERROR insert cliente %s] %v", c.RbxCode, err)
 					_ = tx.Rollback(ctx)
@@ -1986,9 +2171,9 @@ func main() {
 						id, codigo_rbx, contrato, mes_competencia, ciclo_vencimento, 
 						data_bloqueio, data_desbloqueio, dias_para_resolver, status_desfecho, 
 						faixa_tempo, operacao, usuario_rbx, status_rbx_codigo, status_rbx_descricao,
-						plano, eh_mimo
+						plano, eh_mimo, bairro
 					)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 					ON CONFLICT (contrato, data_bloqueio) DO UPDATE SET
 						mes_competencia = EXCLUDED.mes_competencia,
 						ciclo_vencimento = EXCLUDED.ciclo_vencimento,
@@ -2001,8 +2186,9 @@ func main() {
 						status_rbx_codigo = COALESCE(eventos_bloqueio.status_rbx_codigo, EXCLUDED.status_rbx_codigo),
 						status_rbx_descricao = COALESCE(eventos_bloqueio.status_rbx_descricao, EXCLUDED.status_rbx_descricao),
 						plano = COALESCE(NULLIF(eventos_bloqueio.plano, ''), EXCLUDED.plano),
-						eh_mimo = COALESCE(eventos_bloqueio.eh_mimo, EXCLUDED.eh_mimo)
-				`, uuid.New().String(), c.RbxCode, c.Contract, c.CompetenceMonth, c.BillingCycle, bTime, uTime, c.DaysToResolve, c.Status, bucket, c.Operation, c.UserRBX, c.RbxStatusCode, c.RbxStatusText, c.Plan, isMimoCandidate)
+						eh_mimo = COALESCE(eventos_bloqueio.eh_mimo, EXCLUDED.eh_mimo),
+						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE eventos_bloqueio.bairro END
+				`, uuid.New().String(), c.RbxCode, c.Contract, c.CompetenceMonth, c.BillingCycle, bTime, uTime, c.DaysToResolve, c.Status, bucket, c.Operation, c.UserRBX, c.RbxStatusCode, c.RbxStatusText, c.Plan, isMimoCandidate, c.Neighborhood)
 				if err != nil {
 					log.Printf("[DB ERROR insert evento contrato %s] %v", c.Contract, err)
 					_ = tx.Rollback(ctx)

@@ -35,6 +35,7 @@ export interface ClientRecord {
   isMimo?: boolean;
   primaryContract?: string;
   linkedMimos?: string;
+  neighborhood?: string;
 }
 
 export interface MonthlyCohortData {
@@ -71,6 +72,7 @@ export interface MonthlyCohortData {
 
 export interface BreakdownItem {
   name: string;
+  city?: string; // Praça / Cidade associada
   totalBlocked: number;
   totalMrr: number;
   returnedCount: number;
@@ -93,6 +95,7 @@ export interface MonthlyAnalyticsData {
   summary: MonthlyCohortData;
   byPlan: BreakdownItem[];
   byCity: BreakdownItem[];
+  byNeighborhood?: BreakdownItem[];
   byCycle: BreakdownItem[];
   availableMonths: string[];
 }
@@ -124,6 +127,7 @@ export interface AnnualAnalyticsData {
   monthlyEvolution: MonthSummaryItem[];
   byPlan: BreakdownItem[];
   byCity: BreakdownItem[];
+  byNeighborhood?: BreakdownItem[];
   byCycle: BreakdownItem[];
   availableYears: string[];
 }

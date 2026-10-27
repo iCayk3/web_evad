@@ -14,7 +14,7 @@ import {
   CartesianGrid,
   Legend,
 } from 'recharts';
-import { Printer, Calendar, RefreshCw, Layers, MapPin, CalendarDays, BarChart3, AlertCircle, FileText, X } from 'lucide-react';
+import { Printer, Calendar, RefreshCw, Layers, MapPin, CalendarDays, BarChart3, AlertCircle, FileText, X, Compass } from 'lucide-react';
 import { ExecutivePrintReport } from './ExecutivePrintReport';
 
 interface MonthlyDashboardProps {
@@ -51,7 +51,7 @@ export function MonthlyDashboard({ initialMonth = '2026-01', viewMode = 'pure', 
   const [data, setData] = useState<MonthlyAnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'all' | 'cycle' | 'plan' | 'city'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'cycle' | 'plan' | 'city' | 'neighborhood'>('all');
 
   const fetchMonthlyData = async (month: string, mode: 'pure' | 'all' = viewMode) => {
     setLoading(true);
@@ -231,6 +231,17 @@ export function MonthlyDashboard({ initialMonth = '2026-01', viewMode = 'pure', 
             >
               <MapPin className="h-3.5 w-3.5" />
               <span>Por Cidade ({data.byCity.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('neighborhood')}
+              className={`py-2 px-1 border-b-2 font-medium flex items-center space-x-1.5 transition ${
+                activeTab === 'neighborhood'
+                  ? 'border-slate-900 text-slate-900 font-bold'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Compass className="h-3.5 w-3.5" />
+              <span>Por Bairro / Vila ({data.byNeighborhood?.length || 0})</span>
             </button>
           </div>
 
@@ -417,6 +428,18 @@ export function MonthlyDashboard({ initialMonth = '2026-01', viewMode = 'pure', 
                 subtitle="Eficiência de recuperação de carteira e churn distribuído por localidade geográfica"
                 dimensionName="Cidade"
                 items={data.byCity}
+              />
+            </div>
+          )}
+
+          {/* 4. Bairros / Vilas */}
+          {(activeTab === 'all' || activeTab === 'neighborhood') && (
+            <div className="space-y-4">
+              <BreakdownTable
+                title="Desempenho por Bairro / Vila"
+                subtitle="Comportamento da carteira, inadimplência e taxa de recuperação detalhada por bairro/vila e cidade"
+                dimensionName="Bairro / Vila"
+                items={data.byNeighborhood || []}
               />
             </div>
           )}

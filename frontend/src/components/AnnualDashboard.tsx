@@ -25,6 +25,7 @@ import {
   AlertCircle,
   BarChart3,
   CheckCircle2,
+  Compass,
 } from 'lucide-react';
 
 interface AnnualDashboardProps {
@@ -36,7 +37,7 @@ export function AnnualDashboard({ initialYear = '2026' }: AnnualDashboardProps) 
   const [data, setData] = useState<AnnualAnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'evolution' | 'cycle' | 'plan' | 'city' | 'all'>('evolution');
+  const [activeTab, setActiveTab] = useState<'evolution' | 'cycle' | 'plan' | 'city' | 'neighborhood' | 'all'>('evolution');
 
   const fetchAnnualData = async (year: string) => {
     setLoading(true);
@@ -206,6 +207,17 @@ export function AnnualDashboard({ initialYear = '2026' }: AnnualDashboardProps) 
             >
               <MapPin className="h-3.5 w-3.5" />
               <span>Consolidado por Cidade ({data.byCity.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('neighborhood')}
+              className={`py-2 px-1 border-b-2 font-medium flex items-center space-x-1.5 transition ${
+                activeTab === 'neighborhood'
+                  ? 'border-slate-900 text-slate-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Compass className="h-3.5 w-3.5" />
+              <span>Consolidado por Bairro / Vila ({data.byNeighborhood?.length || 0})</span>
             </button>
             <button
               onClick={() => setActiveTab('all')}
@@ -449,6 +461,18 @@ export function AnnualDashboard({ initialYear = '2026' }: AnnualDashboardProps) 
                 subtitle={`Comportamento de inadimplência e taxa de resolução por município em ${selectedYear}`}
                 dimensionName="Cidade"
                 items={data.byCity}
+              />
+            </div>
+          )}
+
+          {/* 5. Bairros / Vilas Anuais */}
+          {(activeTab === 'neighborhood' || activeTab === 'all') && (
+            <div className="space-y-3">
+              <BreakdownTable
+                title="Consolidado Anual por Bairro / Vila"
+                subtitle={`Comportamento de inadimplência e taxa de resolução por bairro/vila e município em ${selectedYear}`}
+                dimensionName="Bairro / Vila"
+                items={data.byNeighborhood || []}
               />
             </div>
           )}

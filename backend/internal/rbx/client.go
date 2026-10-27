@@ -436,6 +436,7 @@ type ContractStatusResult struct {
 	MonthlyFee         float64    `json:"monthlyFee"`
 	DueDay             int        `json:"dueDay"`
 	City               string     `json:"city"`
+	Neighborhood       string     `json:"neighborhood"` // Bairro / Vila do cliente ou instalação
 	LastOperationDate  *time.Time `json:"lastOperationDate"`
 	CancellationReason string     `json:"cancellationReason"`
 	DaysOverdue        int        `json:"daysOverdue"`
@@ -598,8 +599,9 @@ func (c *Client) ConsultarContratos(ctx context.Context, contractCodes []string)
 		daysOverdue := toInt(rc, "Qtde_Dias_Vencido")
 		cancellationReason := toStr(rc, "Cancelamento_Motivo", "motivo_cancelamento")
 
-		// Endereço / Cidade
+		// Endereço / Cidade e Bairro/Vila
 		city := toStr(rc, "EnderecoInstalacao_Cidade", "EnderecoCobranca_Cidade", "cidade")
+		neighborhood := toStr(rc, "EnderecoInstalacao_Bairro", "EnderecoCobranca_Bairro", "bairro", "Bairro")
 
 		// Data da última operação
 		lastOpStr := toStr(rc, "DataUltimaOperacao", "data_ultima_operacao")
@@ -630,6 +632,7 @@ func (c *Client) ConsultarContratos(ctx context.Context, contractCodes []string)
 			MonthlyFee:         monthlyFee,
 			DueDay:             dueDay,
 			City:               city,
+			Neighborhood:       neighborhood,
 			LastOperationDate:  lastOpDate,
 			CancellationReason: cancellationReason,
 			DaysOverdue:        daysOverdue,
@@ -760,4 +763,126 @@ func (c *Client) ConsultarDocumentosAbertos(ctx context.Context, filtro string) 
 	}
 
 	return results, nil
+}
+
+type ClientAddressResult struct {
+	ClientCode   string `json:"clientCode"`
+	Name         string `json:"name"`
+	City         string `json:"city"`
+	Neighborhood string `json:"neighborhood"` // Bairro / Vila
+}
+
+// ConsultarClientes consulta a ficha cadastral dos clientes informados para obter Cidade e Bairro/Vila
+func (c *Client) ConsultarClientes(ctx context.Context, clientCodes []string) (map[string]ClientAddressResult, error) {
+	targetURL := c.EndpointURLForV1()
+	token := strings.TrimSpace(c.config.Token)
+
+	if targetURL == "" || token == "" || len(clientCodes) == 0 {
+		return nil, nil
+	}
+
+	cleanCodesMap := make(map[string]bool)
+	cleanCodes := make([]string, 0, len(clientCodes))
+	for _, code := range clientCodes {
+		clean := strings.TrimSpace(code)
+		clean = strings.ReplaceAll(clean, ".", "")
+		clean = strings.ReplaceAll(clean, ",", "")
+		if clean != "" && !cleanCodesMap[clean] {
+			cleanCodesMap[clean] = true
+			cleanCodes = append(cleanCodes, clean)
+		}
+	}
+
+	if len(cleanCodes) == 0 {
+		return nil, nil
+	}
+
+	resultMap := make(map[string]ClientAddressResult)
+
+	// Processa em lotes de 100 para evitar limites de tamanho de query no RBX
+	batchSize := 100
+	for i := 0; i < len(cleanCodes); i += batchSize {
+		end := i + batchSize
+		if end > len(cleanCodes) {
+			end = len(cleanCodes)
+		}
+		batch := cleanCodes[i:end]
+
+		quoted := make([]string, len(batch))
+		for j, b := range batch {
+			quoted[j] = fmt.Sprintf("'%s'", b)
+		}
+
+		filtro := fmt.Sprintf("Codigo IN (%s)", strings.Join(quoted, ", "))
+
+		payload := map[string]interface{}{
+			"ConsultaClientes": map[string]interface{}{
+				"Autenticacao": map[string]string{
+					"ChaveIntegracao": token,
+				},
+				"Filtro": filtro,
+			},
+		}
+
+		bodyBytes, err := json.Marshal(payload)
+		if err != nil {
+			continue
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		req.Header.Set("Accept", "application/json, */*")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		type rawClient map[string]interface{}
+		var parsed struct {
+			Result []rawClient `json:"result"`
+		}
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			continue
+		}
+
+		toStr := func(rc rawClient, keys ...string) string {
+			for _, k := range keys {
+				if v, ok := rc[k]; ok && v != nil {
+					return strings.TrimSpace(fmt.Sprintf("%v", v))
+				}
+			}
+			return ""
+		}
+
+		for _, rc := range parsed.Result {
+			cliCode := toStr(rc, "Codigo", "codigo", "Cliente_Codigo")
+			cliCodeClean := strings.ReplaceAll(strings.ReplaceAll(cliCode, ".", ""), ",", "")
+			if cliCodeClean == "" {
+				continue
+			}
+
+			name := toStr(rc, "Nome", "nome", "Cliente_Nome")
+			city := toStr(rc, "Cidade", "cidade", "Cobr_Cidade")
+			bairro := toStr(rc, "Bairro", "bairro", "Cobr_Bairro", "Distrito", "distrito")
+
+			resultMap[cliCodeClean] = ClientAddressResult{
+				ClientCode:   cliCodeClean,
+				Name:         name,
+				City:         city,
+				Neighborhood: bairro,
+			}
+		}
+	}
+
+	return resultMap, nil
 }
