@@ -142,3 +142,51 @@ export interface CompetenciasResponse {
   availableYears: string[];
   latestMonth: string;
 }
+
+export interface EquipamentoItem {
+  id: string;
+  protocolo: string;
+  codigoCliente: string;
+  nomeCliente: string;
+  cidade: string;
+  bairro: string;
+  contrato: string;
+  plano: string;
+  dataAbertura: string | null;
+  dataEncerramento: string | null;
+  mesCompetencia: string;
+  situacaoOS: string;
+  topico: string;
+  assunto: string;
+  solucao: string;
+  causa: string;
+  usuarioAbertura: string;
+  statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'outro';
+  equipamentoIdentificado: string;
+  serialMac: string;
+}
+
+export interface EquipamentoSummary {
+  totalOrders: number;
+  recuperados: number;
+  pendentes: number;
+  emAndamento: number;
+  cancelamentoAbortado: number;
+  taxaRecuperacao: number;
+}
+
+export interface EquipamentoCityStats {
+  cidade: string;
+  total: number;
+  recuperados: number;
+  pendentes: number;
+  taxaRecuperacao: number;
+}
+
+export interface EquipamentoResponse {
+  summary: EquipamentoSummary;
+  orders: EquipamentoItem[];
+  byCity: EquipamentoCityStats[];
+  availableMonths: string[];
+  selectedMonth: string;
+}

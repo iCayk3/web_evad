@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -193,6 +194,31 @@ func initDB() {
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);
+
+		-- Suporte a Gestão e Recuperação de Equipamentos (Atendimentos RBX)
+		CREATE TABLE IF NOT EXISTS atendimentos_equipamentos (
+			id VARCHAR(50) PRIMARY KEY,
+			protocolo VARCHAR(50),
+			codigo_cliente VARCHAR(50) NOT NULL,
+			contrato VARCHAR(50),
+			data_abertura TIMESTAMP WITH TIME ZONE,
+			data_encerramento TIMESTAMP WITH TIME ZONE,
+			mes_competencia VARCHAR(7),
+			situacao_os VARCHAR(20),
+			topico VARCHAR(255),
+			assunto TEXT,
+			solucao TEXT,
+			causa VARCHAR(255),
+			usuario_abertura VARCHAR(100),
+			usuario_encerramento VARCHAR(100),
+			status_recuperacao VARCHAR(50) NOT NULL DEFAULT 'pendente',
+			equipamento_identificado TEXT,
+			serial_mac VARCHAR(100),
+			sincronizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_equip_competencia ON atendimentos_equipamentos(mes_competencia);
+		CREATE INDEX IF NOT EXISTS idx_equip_cliente ON atendimentos_equipamentos(codigo_cliente);
+		CREATE INDEX IF NOT EXISTS idx_equip_status ON atendimentos_equipamentos(status_recuperacao);
 
 		-- Cancelamentos com motivo "SEM USO" são Churn real (cliente pagava sem usar o ponto de internet)
 		UPDATE eventos_bloqueio
@@ -1278,6 +1304,267 @@ func enrichMissingBairros(ctx context.Context, client *rbx.Client) (int, int) {
 	return updatedClients, int(updatedEvents)
 }
 
+type EquipamentoItem struct {
+	ID                      string     `json:"id"`
+	Protocolo               string     `json:"protocolo"`
+	CodigoCliente           string     `json:"codigoCliente"`
+	NomeCliente             string     `json:"nomeCliente"`
+	Cidade                  string     `json:"cidade"`
+	Bairro                  string     `json:"bairro"`
+	Contrato                string     `json:"contrato"`
+	Plano                   string     `json:"plano"`
+	DataAbertura            *time.Time `json:"dataAbertura"`
+	DataEncerramento        *time.Time `json:"dataEncerramento"`
+	MesCompetencia          string     `json:"mesCompetencia"`
+	SituacaoOS              string     `json:"situacaoOS"`
+	Topico                  string     `json:"topico"`
+	Assunto                 string     `json:"assunto"`
+	Solucao                 string     `json:"solucao"`
+	Causa                   string     `json:"causa"`
+	UsuarioAbertura         string     `json:"usuarioAbertura"`
+	StatusRecuperacao       string     `json:"statusRecuperacao"` // 'recuperado', 'pendente', 'em_andamento', 'cancelamento_abortado'
+	EquipamentoIdentificado string     `json:"equipamentoIdentificado"`
+	SerialMac               string     `json:"serialMac"`
+}
+
+type EquipamentoSummary struct {
+	TotalOrders          int     `json:"totalOrders"`
+	Recuperados          int     `json:"recuperados"`
+	Pendentes            int     `json:"pendentes"`
+	EmAndamento          int     `json:"emAndamento"`
+	CancelamentoAbortado int     `json:"cancelamentoAbortado"`
+	TaxaRecuperacao      float64 `json:"taxaRecuperacao"`
+}
+
+type EquipamentoCityStats struct {
+	Cidade          string  `json:"cidade"`
+	Total           int     `json:"total"`
+	Recuperados     int     `json:"recuperados"`
+	Pendentes       int     `json:"pendentes"`
+	TaxaRecuperacao float64 `json:"taxaRecuperacao"`
+}
+
+type EquipamentoResponse struct {
+	Summary         EquipamentoSummary     `json:"summary"`
+	Orders          []EquipamentoItem      `json:"orders"`
+	ByCity          []EquipamentoCityStats `json:"byCity"`
+	AvailableMonths []string               `json:"availableMonths"`
+	SelectedMonth   string                 `json:"selectedMonth"`
+}
+
+var reComodato = regexp.MustCompile(`(?i)Equip:\s*([^/\r\n#]+)`)
+var reSolEquip = regexp.MustCompile(`(?i)RETIRADA DE UMA?\s*([^,\r\n]+)`)
+var reSerialMac = regexp.MustCompile(`(?i)(?:Ser|MAC|Serial):\s*([a-zA-Z0-9.:_-]+)`)
+
+func extractEquipmentInfo(assunto, solucao string) (string, string) {
+	text := assunto + "\n" + solucao
+	var equips []string
+	var serials []string
+
+	for _, match := range reComodato.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			val := strings.TrimSpace(match[1])
+			if val != "" {
+				equips = append(equips, val)
+			}
+		}
+	}
+
+	for _, match := range reSolEquip.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			val := strings.TrimSpace(match[1])
+			if val != "" {
+				equips = append(equips, val)
+			}
+		}
+	}
+
+	for _, match := range reSerialMac.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			val := strings.TrimSpace(match[1])
+			if val != "" {
+				serials = append(serials, val)
+			}
+		}
+	}
+
+	uniqEquips := make(map[string]bool)
+	var cleanEquips []string
+	for _, e := range equips {
+		if !uniqEquips[e] {
+			uniqEquips[e] = true
+			cleanEquips = append(cleanEquips, e)
+		}
+	}
+
+	uniqSerials := make(map[string]bool)
+	var cleanSerials []string
+	for _, s := range serials {
+		if !uniqSerials[s] {
+			uniqSerials[s] = true
+			cleanSerials = append(cleanSerials, s)
+		}
+	}
+
+	equipStr := "Equipamento em Comodato"
+	if len(cleanEquips) > 0 {
+		equipStr = strings.Join(cleanEquips, ", ")
+	}
+	serialStr := strings.Join(cleanSerials, ", ")
+
+	if len(equipStr) > 255 {
+		equipStr = equipStr[:255]
+	}
+	if len(serialStr) > 100 {
+		serialStr = serialStr[:100]
+	}
+
+	return equipStr, serialStr
+}
+
+func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.Time) string {
+	c := strings.ToUpper(causa)
+	s := strings.ToUpper(solucao)
+
+	if strings.Contains(c, "DESISTIU") || strings.Contains(s, "DESISTIU") {
+		return "cancelamento_abortado"
+	}
+
+	if strings.Contains(c, "INTERROMPIDO") ||
+		strings.Contains(c, "ABORTADO") ||
+		strings.Contains(s, "NINGUÉM") ||
+		strings.Contains(s, "NINGUEM") ||
+		strings.Contains(s, "NUNCA SE ENCONTRA") ||
+		strings.Contains(s, "NÃO SE ENCONTRA") ||
+		strings.Contains(s, "NAO SE ENCONTRA") ||
+		strings.Contains(s, "RECUSOU") {
+		return "pendente"
+	}
+
+	if strings.Contains(c, "RETIRADO") ||
+		strings.Contains(c, "RECEBIDO") ||
+		strings.Contains(c, "CONFERIDO") ||
+		strings.Contains(c, "SUPERVISÃO OK") ||
+		strings.Contains(c, "SUPERVISAO OK") ||
+		strings.Contains(s, "RETIRADA DE UMA") ||
+		strings.Contains(s, "RETIRADA DE UM") ||
+		strings.Contains(s, "FOI FEITO A RETIRADA") ||
+		strings.Contains(s, "EQUIPAMENTO RECOLHIDO") {
+		return "recuperado"
+	}
+
+	if encerramento == nil {
+		return "em_andamento"
+	}
+
+	if situacaoOS == "C" || situacaoOS == "F" {
+		return "recuperado"
+	}
+
+	return "pendente"
+}
+
+func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int, error) {
+	if dbPool == nil {
+		return 0, fmt.Errorf("banco de dados não disponível")
+	}
+
+	atends, err := client.ConsultarAtendimentosRetirada(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, at := range atends {
+		mesComp := ""
+		if at.EncerramentoDataHora != nil {
+			mesComp = at.EncerramentoDataHora.Format("2006-01")
+		} else if at.AberturaDataHora != nil {
+			mesComp = at.AberturaDataHora.Format("2006-01")
+		}
+
+		statusRec := classifyRecuperacao(at.Causa, at.Solucao, at.SituacaoOS, at.EncerramentoDataHora)
+		equip, serial := extractEquipmentInfo(at.Assunto, at.Solucao)
+
+		_, err := dbPool.Exec(ctx, `
+			INSERT INTO atendimentos_equipamentos (
+				id, protocolo, codigo_cliente, data_abertura, data_encerramento,
+				mes_competencia, situacao_os, topico, assunto, solucao,
+				causa, usuario_abertura, status_recuperacao, equipamento_identificado, serial_mac, sincronizado_em
+			) VALUES (
+				$1, $2, $3, $4, $5,
+				$6, $7, $8, $9, $10,
+				$11, $12, $13, $14, $15, CURRENT_TIMESTAMP
+			)
+			ON CONFLICT (id) DO UPDATE SET
+				protocolo = EXCLUDED.protocolo,
+				codigo_cliente = EXCLUDED.codigo_cliente,
+				data_abertura = EXCLUDED.data_abertura,
+				data_encerramento = EXCLUDED.data_encerramento,
+				mes_competencia = EXCLUDED.mes_competencia,
+				situacao_os = EXCLUDED.situacao_os,
+				topico = EXCLUDED.topico,
+				assunto = EXCLUDED.assunto,
+				solucao = EXCLUDED.solucao,
+				causa = EXCLUDED.causa,
+				usuario_abertura = EXCLUDED.usuario_abertura,
+				status_recuperacao = EXCLUDED.status_recuperacao,
+				equipamento_identificado = EXCLUDED.equipamento_identificado,
+				serial_mac = EXCLUDED.serial_mac,
+				sincronizado_em = CURRENT_TIMESTAMP
+		`,
+			at.Numero, at.Protocolo, at.CodigoCliente, at.AberturaDataHora, at.EncerramentoDataHora,
+			mesComp, at.SituacaoOS, at.Topico, at.Assunto, at.Solucao,
+			at.Causa, at.UsuarioAbertura, statusRec, equip, serial,
+		)
+
+		if err == nil {
+			count++
+		}
+	}
+
+	// Enriquecer nomes, cidades e bairros dos clientes que não estejam na tabela clientes
+	var missingCliCodes []string
+	cliCodesSet := make(map[string]bool)
+	for _, at := range atends {
+		if at.CodigoCliente != "" && !cliCodesSet[at.CodigoCliente] {
+			cliCodesSet[at.CodigoCliente] = true
+			var exists bool
+			_ = dbPool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM clientes WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $1)", at.CodigoCliente).Scan(&exists)
+			if !exists {
+				missingCliCodes = append(missingCliCodes, at.CodigoCliente)
+			}
+		}
+	}
+
+	if len(missingCliCodes) > 0 {
+		cliBatchSize := 100
+		for i := 0; i < len(missingCliCodes); i += cliBatchSize {
+			end := i + cliBatchSize
+			if end > len(missingCliCodes) {
+				end = len(missingCliCodes)
+			}
+			chunk := missingCliCodes[i:end]
+			addrMap, err := client.ConsultarClientes(ctx, chunk)
+			if err == nil {
+				for code, info := range addrMap {
+					_, _ = dbPool.Exec(ctx, `
+						INSERT INTO clientes (codigo_rbx, nome, cidade, bairro, status)
+						VALUES ($1, $2, $3, $4, 'inativo')
+						ON CONFLICT (codigo_rbx) DO UPDATE SET
+							nome = CASE WHEN EXCLUDED.nome != '' THEN EXCLUDED.nome ELSE clientes.nome END,
+							cidade = CASE WHEN EXCLUDED.cidade != '' THEN EXCLUDED.cidade ELSE clientes.cidade END,
+							bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
+					`, code, info.Name, info.City, info.Neighborhood)
+				}
+			}
+		}
+	}
+
+	log.Printf("[RBX EQUIPAMENTOS SYNC] Sincronização concluída: %d atendimentos de retirada inseridos/atualizados.", count)
+	return count, nil
+}
+
 func main() {
 	initDB()
 	startBackgroundSyncScheduler()
@@ -1622,6 +1909,174 @@ func main() {
 			"updatedClients": updatedClients,
 			"updatedEvents":  updatedEvents,
 			"message":        fmt.Sprintf("Sincronização de Bairros/Vilas concluída com sucesso! %d clientes e %d eventos atualizados.", updatedClients, updatedEvents),
+		})
+	})
+
+	r.Get("/api/equipamentos/retiradas", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		month := strings.TrimSpace(r.URL.Query().Get("month"))
+		if month == "" {
+			month = "2026-01"
+		}
+
+		// Se a tabela estiver vazia, sincroniza automaticamente do RBX na primeira consulta
+		var totalTable int
+		_ = dbPool.QueryRow(ctx, "SELECT COUNT(*) FROM atendimentos_equipamentos").Scan(&totalTable)
+		if totalTable == 0 {
+			var rbxURL, rbxToken, rbxVersion string
+			err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+			if err == nil && strings.TrimSpace(rbxToken) != "" {
+				client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
+				_, _ = syncAtendimentosEquipamentos(ctx, client)
+			}
+		}
+
+		// Meses disponíveis na base
+		var availMonths []string
+		mRows, err := dbPool.Query(ctx, `
+			SELECT DISTINCT mes_competencia 
+			FROM atendimentos_equipamentos 
+			WHERE mes_competencia IS NOT NULL AND mes_competencia != '' 
+			ORDER BY mes_competencia DESC
+		`)
+		if err == nil {
+			defer mRows.Close()
+			for mRows.Next() {
+				var m string
+				if err := mRows.Scan(&m); err == nil && m != "" {
+					availMonths = append(availMonths, m)
+				}
+			}
+		}
+
+		// Atendimentos do mês selecionado com enriquecimento de dados cadastrais
+		rows, err := dbPool.Query(ctx, `
+			SELECT 
+				a.id, COALESCE(a.protocolo, ''), a.codigo_cliente, 
+				COALESCE(c.nome, 'Cliente ' || a.codigo_cliente) as nome_cliente,
+				COALESCE(c.cidade, 'Não Informado') as cidade,
+				COALESCE(c.bairro, 'Não Informado') as bairro,
+				COALESCE(c.contrato, '') as contrato,
+				COALESCE(c.plano, '') as plano,
+				a.data_abertura, a.data_encerramento, COALESCE(a.mes_competencia, ''),
+				COALESCE(a.situacao_os, ''), COALESCE(a.topico, ''), 
+				COALESCE(a.assunto, ''), COALESCE(a.solucao, ''), COALESCE(a.causa, ''),
+				COALESCE(a.usuario_abertura, ''), a.status_recuperacao, 
+				COALESCE(a.equipamento_identificado, ''), COALESCE(a.serial_mac, '')
+			FROM atendimentos_equipamentos a
+			LEFT JOIN clientes c ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+			WHERE a.mes_competencia = $1
+			ORDER BY a.data_encerramento DESC NULLS LAST, a.data_abertura DESC
+		`, month)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar atendimentos de equipamentos: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var orders []EquipamentoItem
+		var summary EquipamentoSummary
+		cityMap := make(map[string]*EquipamentoCityStats)
+
+		for rows.Next() {
+			var item EquipamentoItem
+			err := rows.Scan(
+				&item.ID, &item.Protocolo, &item.CodigoCliente,
+				&item.NomeCliente, &item.Cidade, &item.Bairro,
+				&item.Contrato, &item.Plano,
+				&item.DataAbertura, &item.DataEncerramento, &item.MesCompetencia,
+				&item.SituacaoOS, &item.Topico, &item.Assunto, &item.Solucao, &item.Causa,
+				&item.UsuarioAbertura, &item.StatusRecuperacao, &item.EquipamentoIdentificado, &item.SerialMac,
+			)
+			if err != nil {
+				continue
+			}
+
+			summary.TotalOrders++
+			switch item.StatusRecuperacao {
+			case "recuperado":
+				summary.Recuperados++
+			case "pendente":
+				summary.Pendentes++
+			case "em_andamento":
+				summary.EmAndamento++
+			case "cancelamento_abortado":
+				summary.CancelamentoAbortado++
+			}
+
+			cidade := item.Cidade
+			if cidade == "" {
+				cidade = "Não Informado"
+			}
+			if _, ok := cityMap[cidade]; !ok {
+				cityMap[cidade] = &EquipamentoCityStats{Cidade: cidade}
+			}
+			cityMap[cidade].Total++
+			if item.StatusRecuperacao == "recuperado" {
+				cityMap[cidade].Recuperados++
+			} else if item.StatusRecuperacao == "pendente" {
+				cityMap[cidade].Pendentes++
+			}
+
+			orders = append(orders, item)
+		}
+
+		if summary.TotalOrders > 0 {
+			summary.TaxaRecuperacao = math.Round((float64(summary.Recuperados)/float64(summary.TotalOrders))*1000) / 10
+		}
+
+		var byCity []EquipamentoCityStats
+		for _, cs := range cityMap {
+			if cs.Total > 0 {
+				cs.TaxaRecuperacao = math.Round((float64(cs.Recuperados)/float64(cs.Total))*1000) / 10
+			}
+			byCity = append(byCity, *cs)
+		}
+		sort.Slice(byCity, func(i, j int) bool {
+			return byCity[i].Total > byCity[j].Total
+		})
+
+		json.NewEncoder(w).Encode(EquipamentoResponse{
+			Summary:         summary,
+			Orders:          orders,
+			ByCity:          byCity,
+			AvailableMonths: availMonths,
+			SelectedMonth:   month,
+		})
+	})
+
+	r.Post("/api/equipamentos/sync", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		var rbxURL, rbxToken, rbxVersion string
+		err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+		if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
+			http.Error(w, `{"error": "Integração RBX não configurada."}`, http.StatusBadRequest)
+			return
+		}
+
+		client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
+		count, err := syncAtendimentosEquipamentos(ctx, client)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao sincronizar equipamentos do RBX: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Sincronização de equipamentos concluída! %d atendimentos de retirada atualizados.", count),
+			"count":   count,
 		})
 	})
 

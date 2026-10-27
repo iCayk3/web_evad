@@ -8,14 +8,15 @@ import { ImportModal } from './components/ImportModal';
 import { RbxConfigModal } from './components/RbxConfigModal';
 import { MonthlyDashboard } from './components/MonthlyDashboard';
 import { AnnualDashboard } from './components/AnnualDashboard';
+import { EquipmentRecoveryDashboard } from './components/EquipmentRecoveryDashboard';
 import { ZEROED_DATA } from './data/mockData';
 import { API_BASE } from './config/api';
 import type { MonthlyCohortData, MonthWithData } from './types';
-import { UploadCloud, FileSpreadsheet, Loader2, KeyRound, Users, BarChart3, TrendingUp } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Loader2, KeyRound, Users, BarChart3, TrendingUp, PackageCheck } from 'lucide-react';
 
 export function App() {
   const [selectedMonth, setSelectedMonth] = useState('2026-01');
-  const [activeView, setActiveView] = useState<'cohort' | 'monthly' | 'annual'>('cohort');
+  const [activeView, setActiveView] = useState<'cohort' | 'monthly' | 'annual' | 'equipamentos'>('cohort');
   const [viewMode, setViewMode] = useState<'pure' | 'all'>('pure');
   const [cohortData, setCohortData] = useState<MonthlyCohortData>(ZEROED_DATA);
   const [competencias, setCompetencias] = useState<{
@@ -181,6 +182,18 @@ export function App() {
             <TrendingUp className="h-4 w-4" />
             <span>Consolidado & Evolução Anual</span>
           </button>
+
+          <button
+            onClick={() => setActiveView('equipamentos')}
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none ${
+              activeView === 'equipamentos'
+                ? 'border-slate-900 text-slate-900 font-semibold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <PackageCheck className="h-4 w-4 text-blue-600" />
+            <span>Recuperação de Equipamentos</span>
+          </button>
         </div>
       </nav>
 
@@ -316,6 +329,10 @@ export function App() {
 
         {activeView === 'annual' && (
           <AnnualDashboard initialYear={selectedMonth.split('-')[0]} />
+        )}
+
+        {activeView === 'equipamentos' && (
+          <EquipmentRecoveryDashboard />
         )}
       </main>
 

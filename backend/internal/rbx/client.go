@@ -886,3 +886,126 @@ func (c *Client) ConsultarClientes(ctx context.Context, clientCodes []string) (m
 
 	return resultMap, nil
 }
+
+type AtendimentoRetiradaResult struct {
+	Numero               string     `json:"numero"`
+	Protocolo            string     `json:"protocolo"`
+	CodigoCliente        string     `json:"codigoCliente"`
+	AberturaDataHora     *time.Time `json:"aberturaDataHora"`
+	EncerramentoDataHora *time.Time `json:"encerramentoDataHora"`
+	SituacaoOS           string     `json:"situacaoOS"`
+	Topico               string     `json:"topico"`
+	Assunto              string     `json:"assunto"`
+	Solucao              string     `json:"solucao"`
+	Causa                string     `json:"causa"`
+	UsuarioAbertura      string     `json:"usuarioAbertura"`
+	Tipo                 string     `json:"tipo"`
+}
+
+// ConsultarAtendimentosRetirada busca no RBX atendimentos de Retirada de Equipamento
+func (c *Client) ConsultarAtendimentosRetirada(ctx context.Context) ([]AtendimentoRetiradaResult, error) {
+	targetURL := c.EndpointURLForV1()
+	token := strings.TrimSpace(c.config.Token)
+	if targetURL == "" || token == "" {
+		return nil, fmt.Errorf("integração RBX não configurada")
+	}
+
+	payload := map[string]interface{}{
+		"ConsultaAtendimentos": map[string]interface{}{
+			"Autenticacao": map[string]string{
+				"ChaveIntegracao": token,
+			},
+			"Filtro": "Atendimentos.Topico IN (5, 135, 156, 158, 160) OR Atendimentos.Fluxo IN (10, 26)",
+		},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao montar payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar requisição: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json, */*")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao chamar API do RBX: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao ler resposta do RBX: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RBX retornou HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	type rawAtend map[string]interface{}
+	var parsed struct {
+		Result []rawAtend `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, fmt.Errorf("formato inesperado do RBX: %v", err)
+	}
+
+	toStr := func(ra rawAtend, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := ra[k]; ok && v != nil {
+				return strings.TrimSpace(fmt.Sprintf("%v", v))
+			}
+		}
+		return ""
+	}
+
+	parseDate := func(s string) *time.Time {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		formats := []string{
+			"2006-01-02 15:04:05",
+			"2006-01-02",
+			"02/01/2006 15:04:05",
+			"02/01/2006",
+		}
+		for _, f := range formats {
+			if t, err := time.Parse(f, s); err == nil {
+				return &t
+			}
+		}
+		return nil
+	}
+
+	var results []AtendimentoRetiradaResult
+	for _, ra := range parsed.Result {
+		num := toStr(ra, "Numero")
+		if num == "" {
+			continue
+		}
+		cliCode := toStr(ra, "CodigoCliente", "Cliente")
+		cliCodeClean := strings.ReplaceAll(strings.ReplaceAll(cliCode, ".", ""), ",", "")
+
+		results = append(results, AtendimentoRetiradaResult{
+			Numero:               num,
+			Protocolo:            toStr(ra, "Protocolo"),
+			CodigoCliente:        cliCodeClean,
+			AberturaDataHora:     parseDate(toStr(ra, "Abertura_DataHora")),
+			EncerramentoDataHora: parseDate(toStr(ra, "Encerramento_DataHora")),
+			SituacaoOS:           toStr(ra, "Situacao_OS"),
+			Topico:               toStr(ra, "Topico"),
+			Assunto:              toStr(ra, "Assunto"),
+			Solucao:              toStr(ra, "Solucao"),
+			Causa:                toStr(ra, "Causa"),
+			UsuarioAbertura:      toStr(ra, "Abertura_Usuario"),
+			Tipo:                 toStr(ra, "Tipo"),
+		})
+	}
+
+	return results, nil
+}
