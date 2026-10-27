@@ -1,0 +1,71 @@
+services:
+  # 1. Banco de Dados Relacional PostgreSQL
+  evad-postgres:
+    image: postgres:16-alpine
+    container_name: evad-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-evad_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-evad_password}
+      POSTGRES_DB: ${DB_NAME:-evad_db}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - evad_pgdata:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-evad_user} -d ${DB_NAME:-evad_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - evad-net
+
+  # 2. Servidor Backend em Go
+  evad-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: evad-backend
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      DATABASE_URL: "postgres://${DB_USER:-evad_user}:${DB_PASSWORD:-evad_password}@evad-postgres:5432/${DB_NAME:-evad_db}?sslmode=disable"
+    ports:
+      - "${BACKEND_PORT:-8081}:8081"
+    depends_on:
+      evad-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - evad-net
+
+  # 3. Interface Web Frontend (React + Vite + Nginx Reverse Proxy)
+  evad-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: evad-frontend
+    restart: unless-stopped
+    ports:
+      # Porta definida dinamicamente via variável de ambiente WEB_PORT no arquivo .env
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      evad-backend:
+        condition: service_healthy
+    networks:
+      - evad-net
+
+networks:
+  evad-net:
+    driver: bridge
+
+volumes:
+  evad_pgdata:
+    name: evad_evad_pgdata
+    driver: local

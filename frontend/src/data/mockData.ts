@@ -1,0 +1,26 @@
+import type { MonthlyCohortData } from '../types';
+
+export const ZEROED_DATA: MonthlyCohortData = {
+  monthKey: '2026-01',
+  monthLabel: 'Janeiro / 2026',
+  totalBlocked: 0,
+  totalMrrBlocked: 0,
+  returnedCount: 0,
+  returnedMrr: 0,
+  returnedRate: 0,
+  churnedCount: 0,
+  churnedMrr: 0,
+  churnRate: 0,
+  suspendedCount: 0,
+  suspendedMrr: 0,
+  suspendedRate: 0,
+  stillBlockedCount: 0,
+  stillBlockedMrr: 0,
+  stillBlockedRate: 0,
+  avgDaysToReturn: 0,
+  returned0to7Days: 0,
+  returned8to15Days: 0,
+  returned16to30Days: 0,
+  returnedOver30Days: 0,
+  clients: [],
+};
