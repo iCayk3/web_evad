@@ -1333,7 +1333,9 @@ type EquipamentoSummary struct {
 	Pendentes            int     `json:"pendentes"`
 	EmAndamento          int     `json:"emAndamento"`
 	CancelamentoAbortado int     `json:"cancelamentoAbortado"`
+	SemOS                int     `json:"semOS"`
 	TaxaRecuperacao      float64 `json:"taxaRecuperacao"`
+	TaxaEfetividadeOS    float64 `json:"taxaEfetividadeOS"`
 }
 
 type EquipamentoCityStats struct {
@@ -1341,6 +1343,7 @@ type EquipamentoCityStats struct {
 	Total           int     `json:"total"`
 	Recuperados     int     `json:"recuperados"`
 	Pendentes       int     `json:"pendentes"`
+	SemOS           int     `json:"semOS"`
 	TaxaRecuperacao float64 `json:"taxaRecuperacao"`
 }
 
@@ -1937,12 +1940,14 @@ func main() {
 			}
 		}
 
-		// Meses disponíveis na base
+		// Meses disponíveis na base (unindo atendimentos e bloqueios)
 		var availMonths []string
 		mRows, err := dbPool.Query(ctx, `
-			SELECT DISTINCT mes_competencia 
-			FROM atendimentos_equipamentos 
-			WHERE mes_competencia IS NOT NULL AND mes_competencia != '' 
+			SELECT DISTINCT mes_competencia FROM (
+				SELECT mes_competencia FROM atendimentos_equipamentos WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
+				UNION
+				SELECT mes_competencia FROM eventos_bloqueio WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
+			) m 
 			ORDER BY mes_competencia DESC
 		`)
 		if err == nil {
@@ -1955,25 +1960,78 @@ func main() {
 			}
 		}
 
-		// Atendimentos do mês selecionado com enriquecimento de dados cadastrais
-		rows, err := dbPool.Query(ctx, `
-			SELECT 
-				a.id, COALESCE(a.protocolo, ''), a.codigo_cliente, 
-				COALESCE(c.nome, 'Cliente ' || a.codigo_cliente) as nome_cliente,
-				COALESCE(c.cidade, 'Não Informado') as cidade,
-				COALESCE(c.bairro, 'Não Informado') as bairro,
-				COALESCE(c.contrato, '') as contrato,
-				COALESCE(c.plano, '') as plano,
-				a.data_abertura, a.data_encerramento, COALESCE(a.mes_competencia, ''),
-				COALESCE(a.situacao_os, ''), COALESCE(a.topico, ''), 
-				COALESCE(a.assunto, ''), COALESCE(a.solucao, ''), COALESCE(a.causa, ''),
-				COALESCE(a.usuario_abertura, ''), a.status_recuperacao, 
-				COALESCE(a.equipamento_identificado, ''), COALESCE(a.serial_mac, '')
-			FROM atendimentos_equipamentos a
-			LEFT JOIN clientes c ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
-			WHERE a.mes_competencia = $1
-			ORDER BY a.data_encerramento DESC NULLS LAST, a.data_abertura DESC
-		`, month)
+		// Atendimentos do mês selecionado com enriquecimento cadastral
+		// + Auditoria Cruzada de Clientes Churned sem OS aberta no RBX
+		equipQuery := `
+			WITH atends AS (
+				SELECT 
+					a.id, 
+					COALESCE(a.protocolo, '') as protocolo, 
+					a.codigo_cliente, 
+					COALESCE(c.nome, 'Cliente ' || a.codigo_cliente) as nome_cliente,
+					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
+					COALESCE(NULLIF(INITCAP(TRIM(c.bairro)), ''), 'Não Informado') as bairro,
+					COALESCE(c.contrato, a.contrato, '') as contrato,
+					COALESCE(c.plano, '') as plano,
+					a.data_abertura, 
+					a.data_encerramento, 
+					COALESCE(a.mes_competencia, '') as mes_competencia,
+					COALESCE(a.situacao_os, '') as situacao_os, 
+					COALESCE(a.topico, '') as topico, 
+					COALESCE(a.assunto, '') as assunto, 
+					COALESCE(a.solucao, '') as solucao, 
+					COALESCE(a.causa, '') as causa,
+					COALESCE(a.usuario_abertura, '') as usuario_abertura, 
+					a.status_recuperacao, 
+					COALESCE(a.equipamento_identificado, '') as equipamento_identificado, 
+					COALESCE(a.serial_mac, '') as serial_mac
+				FROM atendimentos_equipamentos a
+				LEFT JOIN clientes c ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+				WHERE a.mes_competencia = $1
+			),
+			churn_sem_os AS (
+				SELECT 
+					'SEM-OS-' || eb.codigo_rbx as id,
+					'S/N' as protocolo,
+					eb.codigo_rbx as codigo_cliente,
+					COALESCE(c.nome, 'Cliente ' || eb.codigo_rbx) as nome_cliente,
+					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
+					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(eb.bairro, ''), c.bairro))), ''), 'Não Informado') as bairro,
+					COALESCE(eb.contrato, c.contrato, '') as contrato,
+					COALESCE(eb.plano, c.plano, '') as plano,
+					eb.data_bloqueio as data_abertura,
+					NULL::timestamp with time zone as data_encerramento,
+					eb.mes_competencia,
+					'SEM OS' as situacao_os,
+					'SEM ORDEM DE SERVIÇO' as topico,
+					'Cliente cancelado (' || COALESCE(eb.motivo_cancelamento, 'Inadimplência') || ') sem abertura de OS de retirada no RBX.' as assunto,
+					'' as solucao,
+					COALESCE(eb.motivo_cancelamento, 'Cancelamento sem chamado de recolhimento') as causa,
+					'Auditoria Churn' as usuario_abertura,
+					'sem_os' as status_recuperacao,
+					'Equipamento em posse do cliente (Em Risco)' as equipamento_identificado,
+					'-' as serial_mac
+				FROM eventos_bloqueio eb
+				JOIN clientes c ON c.codigo_rbx = eb.codigo_rbx
+				WHERE eb.mes_competencia = $1
+				  AND eb.status_desfecho = 'churned'
+				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+				  AND NOT EXISTS (
+					  SELECT 1 FROM atendimentos_equipamentos ae
+					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '')
+				  )
+			)
+			SELECT * FROM (
+				SELECT * FROM atends
+				UNION ALL
+				SELECT * FROM churn_sem_os
+			) u
+			ORDER BY 
+				CASE WHEN status_recuperacao = 'sem_os' THEN 1 ELSE 0 END,
+				data_encerramento DESC NULLS LAST, 
+				data_abertura DESC
+		`
+		rows, err := dbPool.Query(ctx, equipQuery, month)
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar atendimentos de equipamentos: %v"}`, err), http.StatusInternalServerError)
 			return
@@ -2008,6 +2066,8 @@ func main() {
 				summary.EmAndamento++
 			case "cancelamento_abortado":
 				summary.CancelamentoAbortado++
+			case "sem_os":
+				summary.SemOS++
 			}
 
 			cidade := item.Cidade
@@ -2022,6 +2082,8 @@ func main() {
 				cityMap[cidade].Recuperados++
 			} else if item.StatusRecuperacao == "pendente" {
 				cityMap[cidade].Pendentes++
+			} else if item.StatusRecuperacao == "sem_os" {
+				cityMap[cidade].SemOS++
 			}
 
 			orders = append(orders, item)
@@ -2029,6 +2091,9 @@ func main() {
 
 		if summary.TotalOrders > 0 {
 			summary.TaxaRecuperacao = math.Round((float64(summary.Recuperados)/float64(summary.TotalOrders))*1000) / 10
+		}
+		if (summary.Recuperados + summary.Pendentes) > 0 {
+			summary.TaxaEfetividadeOS = math.Round((float64(summary.Recuperados)/float64(summary.Recuperados+summary.Pendentes))*1000) / 10
 		}
 
 		var byCity []EquipamentoCityStats

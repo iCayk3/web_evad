@@ -161,7 +161,7 @@ export interface EquipamentoItem {
   solucao: string;
   causa: string;
   usuarioAbertura: string;
-  statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'outro';
+  statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'sem_os' | 'outro';
   equipamentoIdentificado: string;
   serialMac: string;
 }
@@ -172,7 +172,9 @@ export interface EquipamentoSummary {
   pendentes: number;
   emAndamento: number;
   cancelamentoAbortado: number;
+  semOS: number;
   taxaRecuperacao: number;
+  taxaEfetividadeOS?: number;
 }
 
 export interface EquipamentoCityStats {
@@ -180,6 +182,7 @@ export interface EquipamentoCityStats {
   total: number;
   recuperados: number;
   pendentes: number;
+  semOS: number;
   taxaRecuperacao: number;
 }
 

@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   MapPin,
   HardDrive,
   FileText,
@@ -157,6 +158,13 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
             Em Andamento
           </span>
         );
+      case 'sem_os':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+            Sem OS (Em Risco)
+          </span>
+        );
       case 'cancelamento_abortado':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
@@ -179,7 +187,9 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
     pendentes: 0,
     emAndamento: 0,
     cancelamentoAbortado: 0,
+    semOS: 0,
     taxaRecuperacao: 0,
+    taxaEfetividadeOS: 0,
   };
 
   return (
@@ -258,17 +268,17 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
       )}
 
       {/* KPI Cards Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3.5">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
         {/* Card 1: Total */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider">Ordens de Retirada</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider">Total em Atenção</span>
             <Layers className="w-4 h-4 text-slate-400" />
           </div>
           <div className="text-2xl font-extrabold text-slate-900">
             {loading ? '...' : summary.totalOrders}
           </div>
-          <p className="text-[11px] text-slate-400 mt-0.5">Chamados abertos/tratados no mês</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">Chamados + Churn sem OS</p>
         </div>
 
         {/* Card 2: Recuperados */}
@@ -283,10 +293,10 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
           <p className="text-[11px] text-emerald-600/80 mt-0.5">Equipamentos recolhidos</p>
         </div>
 
-        {/* Card 3: Taxa de Recuperação */}
+        {/* Card 3: Taxa de Recuperação Global */}
         <div className="bg-white border border-blue-200/80 rounded-xl p-4 shadow-xs bg-blue-50/20">
           <div className="flex items-center justify-between text-blue-900 mb-1">
-            <span className="text-[11px] font-semibold uppercase tracking-wider">Taxa de Sucesso</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wider">Taxa Global</span>
             <span className="text-xs font-bold text-blue-700">{summary.taxaRecuperacao}%</span>
           </div>
           <div className="text-2xl font-extrabold text-blue-700">
@@ -299,9 +309,24 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
               style={{ width: `${Math.min(summary.taxaRecuperacao, 100)}%` }}
             ></div>
           </div>
+          <p className="text-[10px] text-blue-600 font-medium mt-1">
+            Eficácia OS: {summary.taxaEfetividadeOS ?? 0}%
+          </p>
         </div>
 
-        {/* Card 4: Pendentes / Insucesso */}
+        {/* Card 4: Sem OS Aberta (Equipamento em Risco) */}
+        <div className="bg-amber-50/40 border border-amber-300/80 rounded-xl p-4 shadow-xs">
+          <div className="flex items-center justify-between text-amber-900 mb-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider">Sem OS (Em Risco)</span>
+            <AlertTriangle className="w-4 h-4 text-amber-600" />
+          </div>
+          <div className="text-2xl font-extrabold text-amber-700">
+            {loading ? '...' : summary.semOS}
+          </div>
+          <p className="text-[11px] text-amber-700/80 mt-0.5">Cancelou s/ ordem de retirada</p>
+        </div>
+
+        {/* Card 5: Pendentes / Insucesso */}
         <div className="bg-white border border-rose-200/80 rounded-xl p-4 shadow-xs bg-rose-50/20">
           <div className="flex items-center justify-between text-rose-800 mb-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider">Não Recuperados</span>
@@ -313,8 +338,8 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
           <p className="text-[11px] text-rose-600/80 mt-0.5">Ninguém no local / Insucesso</p>
         </div>
 
-        {/* Card 5: Desistiu / Retido */}
-        <div className="bg-white border border-purple-200/80 rounded-xl p-4 shadow-xs bg-purple-50/20 col-span-2 md:col-span-1">
+        {/* Card 6: Desistiu / Retido */}
+        <div className="bg-white border border-purple-200/80 rounded-xl p-4 shadow-xs bg-purple-50/20">
           <div className="flex items-center justify-between text-purple-800 mb-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider">Desistiu / Retido</span>
             <RotateCcw className="w-4 h-4 text-purple-600" />
@@ -351,6 +376,11 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
                 <span className={`text-[10px] font-bold ${c.taxaRecuperacao >= 60 ? 'text-emerald-600' : 'text-amber-600'} ${cityFilter === c.cidade ? 'text-emerald-300' : ''}`}>
                   {c.taxaRecuperacao}% recup.
                 </span>
+                {c.semOS > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${cityFilter === c.cidade ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-800 border border-amber-200'}`}>
+                    {c.semOS} sem OS
+                  </span>
+                )}
               </button>
             ))}
             {cityFilter !== 'todas' && (
@@ -404,6 +434,7 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
           {[
             { id: 'todos', label: 'Todos', count: summary.totalOrders },
             { id: 'recuperado', label: 'Recuperados', count: summary.recuperados },
+            { id: 'sem_os', label: 'Sem OS (Em Risco)', count: summary.semOS },
             { id: 'pendente', label: 'Não Recuperados', count: summary.pendentes },
             { id: 'em_andamento', label: 'Em Aberto', count: summary.emAndamento },
             { id: 'cancelamento_abortado', label: 'Desistiram', count: summary.cancelamentoAbortado },
@@ -470,8 +501,14 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
                     <React.Fragment key={order.id}>
                       <tr
                         onClick={() => toggleExpand(order.id)}
-                        className={`hover:bg-blue-50/40 transition cursor-pointer ${
-                          isExpanded ? 'bg-blue-50/60' : ''
+                        className={`transition cursor-pointer ${
+                          order.statusRecuperacao === 'sem_os'
+                            ? isExpanded
+                              ? 'bg-amber-100/70 border-l-4 border-l-amber-500'
+                              : 'bg-amber-50/40 hover:bg-amber-100/50 border-l-4 border-l-amber-400'
+                            : isExpanded
+                            ? 'bg-blue-50/60'
+                            : 'hover:bg-blue-50/40'
                         }`}
                       >
                         {/* Expand Icon */}
@@ -501,12 +538,26 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
 
                         {/* Atendimento & Data */}
                         <td className="py-3 px-3 text-slate-700">
-                          <div className="font-mono font-semibold text-slate-800">
-                            #{order.id}
-                          </div>
-                          <div className="text-[11px] text-slate-500">
-                            {formatDate(order.dataEncerramento || order.dataAbertura)}
-                          </div>
+                          {order.statusRecuperacao === 'sem_os' ? (
+                            <>
+                              <div className="font-mono font-bold text-amber-700 flex items-center gap-1">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span>Sem OS Aberta</span>
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                Bloqueio/Canc: {formatDate(order.dataAbertura)}
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="font-mono font-semibold text-slate-800">
+                                #{order.id}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {formatDate(order.dataEncerramento || order.dataAbertura)}
+                              </div>
+                            </>
+                          )}
                         </td>
 
                         {/* Equipamento */}
@@ -514,7 +565,7 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
                           <div className="font-medium text-slate-900 line-clamp-1 max-w-xs">
                             {order.equipamentoIdentificado || 'Equipamento em Comodato'}
                           </div>
-                          {order.serialMac && (
+                          {order.serialMac && order.serialMac !== '-' && (
                             <div className="text-[10px] font-mono text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded inline-block mt-0.5">
                               {order.serialMac}
                             </div>
@@ -528,9 +579,15 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
 
                         {/* Parecer Técnico */}
                         <td className="py-3 px-3 text-slate-600 max-w-xs">
-                          <div className="line-clamp-2 text-[11px] italic text-slate-700">
-                            {order.solucao ? `"${order.solucao}"` : order.causa || 'Sem parecer registrado'}
-                          </div>
+                          {order.statusRecuperacao === 'sem_os' ? (
+                            <div className="line-clamp-2 text-[11px] font-medium text-amber-800">
+                              Cancelou ({order.causa || 'Inadimplência'}) - Nenhuma OS de retirada aberta
+                            </div>
+                          ) : (
+                            <div className="line-clamp-2 text-[11px] italic text-slate-700">
+                              {order.solucao ? `"${order.solucao}"` : order.causa || 'Sem parecer registrado'}
+                            </div>
+                          )}
                         </td>
                       </tr>
 
@@ -538,37 +595,63 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
                       {isExpanded && (
                         <tr className="bg-slate-50/80 border-b border-slate-200">
                           <td colSpan={7} className="p-4 px-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                              {/* Left Column: Solution & Cause */}
-                              <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
-                                <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
-                                  <FileText className="w-3.5 h-3.5 text-blue-600" />
-                                  <span>Parecer do Técnico na Baixa (Solução)</span>
+                            {order.statusRecuperacao === 'sem_os' ? (
+                              <div className="space-y-3 bg-amber-50/90 border border-amber-300 rounded-lg p-4 shadow-2xs">
+                                <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+                                  <AlertTriangle className="w-4.5 h-4.5 text-amber-600 shrink-0" />
+                                  <span>Ponto Cego Identificado: Cancelamento de Contrato sem Ordem de Recolhimento</span>
                                 </div>
-                                <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 font-mono text-[11px] leading-relaxed">
-                                  {order.solucao || 'Nenhum texto de solução cadastrado no chamado.'}
-                                </div>
-                                <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
-                                  <span>Causa registrada: <strong>{order.causa || 'Não informada'}</strong></span>
-                                  <span>Tópico: <strong>{order.topico}</strong></span>
+                                <p className="text-slate-700 text-xs leading-relaxed">
+                                  Este cliente sofreu cancelamento de contrato (motivo: <strong>{order.causa || 'Inadimplência'}</strong>) no período de competência, porém <strong>nenhuma OS de retirada de equipamento foi aberta no RBX</strong>. O aparelho (ONT/Roteador em comodato) permanece com o cliente sem qualquer chamado de busca agendado para o time de campo.
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2.5 pt-2 text-[11px] text-amber-950 font-medium">
+                                  <span className="bg-white px-2.5 py-1 rounded border border-amber-200 shadow-2xs">
+                                    Código Cliente RBX: <strong className="font-mono">{order.codigoCliente}</strong>
+                                  </span>
+                                  <span className="bg-white px-2.5 py-1 rounded border border-amber-200 shadow-2xs">
+                                    Contrato: <strong className="font-mono">{order.contrato || 'N/I'}</strong>
+                                  </span>
+                                  <span className="bg-white px-2.5 py-1 rounded border border-amber-200 shadow-2xs">
+                                    Data de Bloqueio/Cancelamento: <strong>{formatDate(order.dataAbertura)}</strong>
+                                  </span>
+                                  <span className="bg-white px-2.5 py-1 rounded border border-amber-200 shadow-2xs text-amber-800">
+                                    Ação recomendada: <strong>Abrir chamado de Retirada de Equipamento no RBX</strong>
+                                  </span>
                                 </div>
                               </div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                                {/* Left Column: Solution & Cause */}
+                                <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
+                                  <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
+                                    <FileText className="w-3.5 h-3.5 text-blue-600" />
+                                    <span>Parecer do Técnico na Baixa (Solução)</span>
+                                  </div>
+                                  <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 font-mono text-[11px] leading-relaxed">
+                                    {order.solucao || 'Nenhum texto de solução cadastrado no chamado.'}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                                    <span>Causa registrada: <strong>{order.causa || 'Não informada'}</strong></span>
+                                    <span>Tópico: <strong>{order.topico}</strong></span>
+                                  </div>
+                                </div>
 
-                              {/* Right Column: Assunto / Comodato Equipments */}
-                              <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
-                                <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
-                                  <HardDrive className="w-3.5 h-3.5 text-indigo-600" />
-                                  <span>Histórico & Equipamentos em Comodato (Assunto)</span>
-                                </div>
-                                <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 text-[11px] leading-relaxed max-h-48 overflow-y-auto font-mono">
-                                  {order.assunto || 'Sem detalhes no assunto.'}
-                                </div>
-                                <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
-                                  <span>Abertura por: <strong>{order.usuarioAbertura || 'Sistema'}</strong></span>
-                                  <span>Protocolo: <strong className="font-mono">{order.protocolo}</strong></span>
+                                {/* Right Column: Assunto / Comodato Equipments */}
+                                <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
+                                  <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
+                                    <HardDrive className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>Histórico & Equipamentos em Comodato (Assunto)</span>
+                                  </div>
+                                  <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 text-[11px] leading-relaxed max-h-48 overflow-y-auto font-mono">
+                                    {order.assunto || 'Sem detalhes no assunto.'}
+                                  </div>
+                                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                                    <span>Abertura por: <strong>{order.usuarioAbertura || 'Sistema'}</strong></span>
+                                    <span>Protocolo: <strong className="font-mono">{order.protocolo}</strong></span>
+                                  </div>
                                 </div>
                               </div>
-                            </div>
+                            )}
                           </td>
                         </tr>
                       )}
