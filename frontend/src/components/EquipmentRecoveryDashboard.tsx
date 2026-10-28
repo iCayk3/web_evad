@@ -22,9 +22,15 @@ import {
   GitBranch,
   Sparkles,
   ShieldAlert,
+  Printer,
+  X,
+  BarChart3,
+  TrendingUp,
+  DollarSign,
 } from 'lucide-react';
 import { API_BASE } from '../config/api';
 import type { EquipamentoResponse, EquipamentoItem } from '../types';
+import { EquipmentPrintReport } from './EquipmentPrintReport';
 
 const formatMonthLabel = (monthKey: string) => {
   if (!monthKey) return '';
@@ -104,6 +110,8 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
   const [selectedMonth, setSelectedMonth] = useState(propMonth || '2026-01');
   const [cohortFilter, setCohortFilter] = useState<'nao_retornados' | 'retornados' | 'todos'>('nao_retornados');
   const [statusFilter, setStatusFilter] = useState<string>('todos');
+  const [viewMode, setViewMode] = useState<'operacional' | 'executivo'>('operacional');
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
   // Sincroniza com a competência global caso o usuário navegue no cabeçalho superior
   useEffect(() => {
@@ -399,62 +407,158 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     }
   };
 
+  const formatCurrency = (val: number) => {
+    return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  };
+
+  const HARDWARE_UNIT_PRICE = 220;
+  const financialStats = useMemo(() => {
+    const totalRisk = (summary.totalOrders || 0) * HARDWARE_UNIT_PRICE;
+    const recovered = (summary.recuperados || 0) * HARDWARE_UNIT_PRICE;
+    const withoutOS = (summary.semOS || 0) * HARDWARE_UNIT_PRICE;
+    const lost = (summary.perdidos || 0) * HARDWARE_UNIT_PRICE;
+    const active = (summary.ativoCobranca || 0) * HARDWARE_UNIT_PRICE;
+    const osEffectiveness =
+      (summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0)) > 0
+        ? ((summary.recuperados / (summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0))) * 100)
+        : 0;
+
+    return {
+      totalRisk,
+      recovered,
+      withoutOS,
+      lost,
+      active,
+      osEffectiveness: Math.round(osEffectiveness * 10) / 10,
+    };
+  }, [summary]);
+
   return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Top Banner / Controls */}
-      <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
-              <PackageCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
-                <span>Recuperação de Equipamentos</span>
-                <span className="text-[10px] sm:text-[11px] font-semibold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
-                  Gestão de Hardware
-                </span>
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-2.5 w-full lg:w-auto">
-          {/* Seletor de Mês */}
-          <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium shrink-0">
-            <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <span className="hidden sm:inline">Mês:</span>
-            <select
-              value={selectedMonth}
-              onChange={(e) => handleMonthSelect(e.target.value)}
-              className="bg-transparent font-bold text-slate-900 border-none outline-none cursor-pointer pr-1 text-xs"
-            >
-              {data?.availableMonths && data.availableMonths.length > 0 ? (
-                data.availableMonths.map((m) => (
-                  <option key={m} value={m}>
-                    {formatMonthLabel(m)}
-                  </option>
-                ))
-              ) : (
-                <option value={selectedMonth}>{formatMonthLabel(selectedMonth)}</option>
-              )}
-            </select>
-          </div>
-
-          {/* Botão Sincronizar RBX */}
-          <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer shrink-0"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-            <span>{syncing ? 'Sincronizando RBX...' : 'Sincronizar Atendimentos'}</span>
-          </button>
-        </div>
+    <div>
+      {/* 1. Folha Executiva Exclusiva para Impressão A4 (Renderiza APENAS no Print) */}
+      <div className="hidden print:block">
+        {data && (
+          <EquipmentPrintReport
+            orders={data.orders}
+            summary={summary}
+            selectedMonth={selectedMonth}
+          />
+        )}
       </div>
+
+      {/* 2. Conteúdo em Tela (Ocultado no Print) */}
+      <div className="space-y-6 print:hidden animate-fade-in">
+        {/* Top Banner / Controls */}
+        <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
+                <PackageCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                  <span>Recuperação de Equipamentos</span>
+                  <span className="text-[10px] sm:text-[11px] font-semibold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                    Gestão de Hardware
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-2.5 w-full lg:w-auto">
+            {/* Seletor de Mês */}
+            <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium shrink-0">
+              <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="hidden sm:inline">Mês:</span>
+              <select
+                value={selectedMonth}
+                onChange={(e) => handleMonthSelect(e.target.value)}
+                className="bg-transparent font-bold text-slate-900 border-none outline-none cursor-pointer pr-1 text-xs"
+              >
+                {data?.availableMonths && data.availableMonths.length > 0 ? (
+                  data.availableMonths.map((m) => (
+                    <option key={m} value={m}>
+                      {formatMonthLabel(m)}
+                    </option>
+                  ))
+                ) : (
+                  <option value={selectedMonth}>{formatMonthLabel(selectedMonth)}</option>
+                )}
+              </select>
+            </div>
+
+            {/* Botão Sincronizar RBX */}
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer shrink-0"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{syncing ? 'Sincronizando RBX...' : 'Sincronizar Atendimentos'}</span>
+              <span className="sm:hidden">Sincronizar</span>
+            </button>
+
+            {/* Botão Prévia Executiva */}
+            <button
+              onClick={() => setIsPreviewOpen(true)}
+              className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer shrink-0"
+              title="Visualizar a folha A4 executiva do relatório de equipamentos"
+            >
+              <FileText className="w-3.5 h-3.5 text-blue-600" />
+              <span className="hidden sm:inline">Prévia Executiva</span>
+              <span className="sm:hidden">Prévia</span>
+            </button>
+
+            {/* Botão Imprimir / Exportar PDF */}
+            <button
+              onClick={() => window.print()}
+              className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold shadow-xs transition cursor-pointer shrink-0"
+              title="Imprimir ou Salvar em PDF o Relatório Executivo A4 de Equipamentos"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Imprimir Relatório (PDF)</span>
+              <span className="sm:hidden">PDF</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Seletor de Modo de Visualização: Operacional vs Executivo */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs">
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setViewMode('operacional')}
+              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer select-none ${
+                viewMode === 'operacional'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+              }`}
+            >
+              <HardDrive className="w-3.5 h-3.5" />
+              <span>Relação Operacional & Auditoria</span>
+            </button>
+
+            <button
+              onClick={() => setViewMode('executivo')}
+              className={`flex items-center space-x-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer select-none ${
+                viewMode === 'executivo'
+                  ? 'bg-slate-900 text-white shadow-xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Dashboard Executivo & KPIs</span>
+            </button>
+          </div>
+
+          <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>KPIs sincronizados em tempo real com as alterações da auditoria</span>
+          </div>
+        </div>
 
       {/* Sync feedback message */}
       {syncMessage && (
@@ -562,50 +666,6 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
         </div>
       </div>
 
-      {/* Regional Summary Badges */}
-      {data?.byCity && data.byCity.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-xs">
-          <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
-            <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <span>Desempenho por Cidade no Mês</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5 sm:gap-2">
-            {data.byCity.map((c) => (
-              <button
-                key={c.cidade}
-                onClick={() => setCityFilter(cityFilter === c.cidade ? 'todas' : c.cidade)}
-                className={`text-[11px] sm:text-xs px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border transition flex items-center gap-1.5 sm:gap-2 cursor-pointer ${
-                  cityFilter === c.cidade
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                }`}
-              >
-                <span className="font-semibold">{c.cidade}</span>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${cityFilter === c.cidade ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-800'}`}>
-                  {c.total}
-                </span>
-                <span className={`text-[10px] font-bold ${c.taxaRecuperacao >= 60 ? 'text-emerald-600' : 'text-amber-600'} ${cityFilter === c.cidade ? 'text-emerald-300' : ''}`}>
-                  {c.taxaRecuperacao}%
-                </span>
-                {c.semOS > 0 && (
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${cityFilter === c.cidade ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-800 border border-amber-200'}`}>
-                    {c.semOS} sem OS
-                  </span>
-                )}
-              </button>
-            ))}
-            {cityFilter !== 'todas' && (
-              <button
-                onClick={() => setCityFilter('todas')}
-                className="text-xs px-2.5 py-1 text-slate-500 hover:text-slate-800 underline cursor-pointer"
-              >
-                Limpar filtro
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Seletor de Foco da Auditoria: Não Retornados (68) vs Voltaram à Base com OS (17) vs Todos */}
       <div className="bg-slate-100/90 border border-slate-200/90 rounded-xl p-1.5 flex flex-wrap sm:flex-nowrap items-center gap-1.5 shadow-2xs">
         <button
@@ -668,6 +728,365 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
           </span>
         </button>
       </div>
+
+      {viewMode === 'executivo' ? (
+        /* ========================================================================= */
+        /* MODO DASHBOARD EXECUTIVO & KPIS                                          */
+        /* ========================================================================= */
+        <div className="space-y-5 animate-fade-in">
+          {/* 1. Painel Financeiro de Patrimônio */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 rounded-xl shadow-xs border border-slate-700">
+              <div className="flex items-center justify-between text-slate-400 mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Patrimônio em Risco</span>
+                <DollarSign className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-2xl font-black text-white mt-1">
+                {formatCurrency(financialStats.totalRisk)}
+              </div>
+              <p className="text-[11px] text-slate-300 mt-1">
+                {summary.totalOrders} aparelhos comodatados sob risco
+              </p>
+            </div>
+
+            <div className="bg-gradient-to-br from-emerald-950 to-emerald-900 text-white p-4 rounded-xl shadow-xs border border-emerald-800">
+              <div className="flex items-center justify-between text-emerald-300 mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Patrimônio Salvo</span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-black text-emerald-100 mt-1">
+                {formatCurrency(financialStats.recovered)}
+              </div>
+              <p className="text-[11px] text-emerald-300 mt-1">
+                {summary.recuperados} aparelhos recolhidos com sucesso
+              </p>
+            </div>
+
+            <div className="bg-gradient-to-br from-amber-950 to-amber-900 text-white p-4 rounded-xl shadow-xs border border-amber-800">
+              <div className="flex items-center justify-between text-amber-300 mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Ponto Cego (Sem OS)</span>
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-2xl font-black text-amber-100 mt-1">
+                {formatCurrency(financialStats.withoutOS)}
+              </div>
+              <p className="text-[11px] text-amber-300 mt-1">
+                {summary.semOS} residências sem chamado aberto no RBX
+              </p>
+            </div>
+
+            <div className="bg-gradient-to-br from-blue-950 to-blue-900 text-white p-4 rounded-xl shadow-xs border border-blue-800">
+              <div className="flex items-center justify-between text-blue-300 mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Eficácia das Visitas</span>
+                <TrendingUp className="w-4 h-4 text-blue-400" />
+              </div>
+              <div className="text-2xl font-black text-blue-100 mt-1">
+                {financialStats.osEffectiveness}%
+              </div>
+              <p className="text-[11px] text-blue-300 mt-1">
+                Taxa de êxito quando técnico visita o endereço
+              </p>
+            </div>
+          </div>
+
+          {/* 2. Gráficos Analíticos em Duas Colunas */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Funil de Efetividade da Operação */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-xs">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-slate-700" />
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-tight">
+                    Funil Operacional de Recolhimento
+                  </h3>
+                </div>
+                <span className="text-[11px] text-slate-400">Eficiência de Campo</span>
+              </div>
+
+              <div className="space-y-3.5">
+                <div>
+                  <div className="flex justify-between text-xs font-bold text-slate-800 mb-1">
+                    <span>1. Inadimplentes Não Retornados (Base Total)</span>
+                    <span>{summary.totalOrders} aparelhos (100%)</span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden">
+                    <div className="bg-slate-800 h-3.5 rounded-full" style={{ width: '100%' }}></div>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-xs font-bold text-blue-900 mb-1">
+                    <span>2. Ordens de Retirada Abertas no RBX</span>
+                    <span>
+                      {summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0)} (
+                      {summary.totalOrders > 0
+                        ? (((summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0)) / summary.totalOrders) * 100).toFixed(1)
+                        : 0}
+                      %)
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden">
+                    <div
+                      className="bg-blue-600 h-3.5 rounded-full"
+                      style={{
+                        width: `${summary.totalOrders > 0 ? (((summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0)) / summary.totalOrders) * 100) : 0}%`,
+                      }}
+                    ></div>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-xs font-bold text-emerald-900 mb-1">
+                    <span>3. Equipamentos Recolhidos com Sucesso</span>
+                    <span>
+                      {summary.recuperados} ({summary.taxaRecuperacao}% do total • {financialStats.osEffectiveness}% das OS)
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-3.5 overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-3.5 rounded-full"
+                      style={{ width: `${Math.min(summary.taxaRecuperacao, 100)}%` }}
+                    ></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mt-4 text-xs text-slate-600 leading-relaxed">
+                <strong>Diagnóstico de Eficiência:</strong> A equipe de campo tem êxito em{' '}
+                <strong>{financialStats.osEffectiveness}%</strong> das ordens abertas. A maior barreira de recuperação
+                não é técnica, mas operacional: <strong>{summary.semOS} clientes</strong> ainda não têm chamado no RBX.
+              </div>
+            </div>
+
+            {/* Donut de Destino do Hardware */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col justify-between">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="w-4 h-4 text-slate-700" />
+                  <h3 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-tight">
+                    Destino do Hardware em Risco
+                  </h3>
+                </div>
+                <span className="text-[11px] text-slate-400">Distribuição do Lote</span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center justify-around gap-4 py-2">
+                <div className="relative w-32 h-32 flex items-center justify-center shrink-0">
+                  <svg className="w-32 h-32 transform -rotate-90" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r={38} stroke="#f1f5f9" strokeWidth="14" fill="transparent" />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={38}
+                      stroke="#f59e0b"
+                      strokeWidth="14"
+                      strokeDasharray={238.76}
+                      strokeDashoffset={0}
+                      fill="transparent"
+                    />
+                    <circle
+                      cx="50"
+                      cy="50"
+                      r={38}
+                      stroke="#10b981"
+                      strokeWidth="14"
+                      strokeDasharray={238.76}
+                      strokeDashoffset={238.76 - (summary.taxaRecuperacao / 100) * 238.76}
+                      fill="transparent"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-base font-black text-slate-900 leading-none">
+                      {summary.taxaRecuperacao}%
+                    </span>
+                    <span className="text-[9px] font-bold text-emerald-700 uppercase mt-0.5">Recuperado</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-xs font-semibold text-slate-700 w-full sm:w-auto">
+                  <div className="flex items-center justify-between gap-3 bg-emerald-50 px-2.5 py-1.5 rounded-lg border border-emerald-200">
+                    <span className="flex items-center gap-1.5 text-emerald-900">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                      Recuperados:
+                    </span>
+                    <strong className="text-emerald-800">{summary.recuperados} ({summary.taxaRecuperacao}%)</strong>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                    <span className="flex items-center gap-1.5 text-amber-900">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                      Sem OS Aberta:
+                    </span>
+                    <strong className="text-amber-800">{summary.semOS}</strong>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 bg-blue-50 px-2.5 py-1.5 rounded-lg border border-blue-200">
+                    <span className="flex items-center gap-1.5 text-blue-900">
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+                      Tentando / Em Campo:
+                    </span>
+                    <strong className="text-blue-800">{summary.tentando || summary.pendentes}</strong>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 bg-rose-50 px-2.5 py-1.5 rounded-lg border border-rose-200">
+                    <span className="flex items-center gap-1.5 text-rose-900">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                      Extraviados / Perdidos:
+                    </span>
+                    <strong className="text-rose-800">{summary.perdidos}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-3 flex justify-between text-xs text-slate-500">
+                <span>Total de aparelhos no lote: <strong>{summary.totalOrders}</strong></span>
+                <button
+                  onClick={() => setViewMode('operacional')}
+                  className="text-blue-600 hover:text-blue-800 font-bold underline cursor-pointer text-xs"
+                >
+                  Abrir tabela operacional ➔
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Matriz Executiva de Praças / Cidades */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3 mb-4">
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-tight flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-slate-600" />
+                  <span>Exposição Patrimonial e Eficácia por Praça / Cidade</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Clique em qualquer praça para filtrar automaticamente e auditar os clientes
+                </p>
+              </div>
+              <span className="text-xs font-semibold text-slate-400">
+                {data?.byCity?.length || 0} praças atendidas
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {data?.byCity?.map((c) => (
+                <div
+                  key={c.cidade}
+                  onClick={() => {
+                    setCityFilter(c.cidade);
+                    setViewMode('operacional');
+                  }}
+                  className="p-3.5 rounded-xl border border-slate-200 hover:border-slate-400 bg-slate-50/50 hover:bg-slate-100/70 transition cursor-pointer group"
+                >
+                  <div className="flex items-center justify-between font-bold text-slate-900 text-xs mb-1.5">
+                    <span className="group-hover:text-blue-600 transition">{c.cidade}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                      c.taxaRecuperacao >= 50
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : c.taxaRecuperacao > 0
+                        ? 'bg-amber-100 text-amber-800'
+                        : 'bg-slate-200 text-slate-700'
+                    }`}>
+                      {c.taxaRecuperacao}% recuperado
+                    </span>
+                  </div>
+
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden mb-2">
+                    <div
+                      className="bg-emerald-500 h-2 rounded-full transition-all"
+                      style={{ width: `${Math.min(c.taxaRecuperacao, 100)}%` }}
+                    ></div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-slate-600">
+                    <span>Total em risco: <strong>{c.total}</strong></span>
+                    <span className="text-emerald-700 font-semibold">{c.recuperados} recolhidos</span>
+                    {c.semOS > 0 && (
+                      <span className="text-amber-700 font-bold">{c.semOS} sem OS</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 4. Recomendações Estratégicas para Gestão de Ativos */}
+          <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-xl p-5 shadow-xs">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <h4 className="text-sm font-black uppercase tracking-wider text-white">
+                Recomendações Prioritárias para Diretoria & Gestão Técnica
+              </h4>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-xs text-slate-200 leading-relaxed">
+              <div className="bg-white/10 p-3 rounded-lg border border-white/10">
+                <strong className="block text-amber-300 font-bold mb-1">
+                  1. Abertura Imediata em Lote
+                </strong>
+                Gerar ordens de serviço no RBX para os <strong>{summary.semOS} clientes</strong> que permanecem com aparelhos sem chamado aberto. Isso destrava <strong>{formatCurrency(financialStats.withoutOS)}</strong> em ativos para a operação.
+              </div>
+              <div className="bg-white/10 p-3 rounded-lg border border-white/10">
+                <strong className="block text-emerald-300 font-bold mb-1">
+                  2. Escalar Rotas Técnicas
+                </strong>
+                Como a taxa de sucesso de campo é de <strong>{financialStats.osEffectiveness}%</strong>, o gargalo não é recusa do cliente, mas agendamento. Concentrar rotas diárias garante retorno acelerado ao estoque.
+              </div>
+              <div className="bg-white/10 p-3 rounded-lg border border-white/10">
+                <strong className="block text-blue-300 font-bold mb-1">
+                  3. Exportar Relatório Executivo
+                </strong>
+                Utilize o botão <strong>"Imprimir Relatório (PDF)"</strong> acima para emitir a folha A4 executiva e apresentar o balanço patrimonial para a diretoria da Sol Telecom.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* ========================================================================= */
+        /* MODO OPERACIONAL: BUSCA, FILTROS & TABELA DE AUDITORIA                   */
+        /* ========================================================================= */
+        <div className="space-y-5 animate-fade-in">
+          {/* Regional Summary Badges */}
+          {data?.byCity && data.byCity.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-xs">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span>Desempenho por Cidade no Mês</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                {data.byCity.map((c) => (
+                  <button
+                    key={c.cidade}
+                    onClick={() => setCityFilter(cityFilter === c.cidade ? 'todas' : c.cidade)}
+                    className={`text-[11px] sm:text-xs px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border transition flex items-center gap-1.5 sm:gap-2 cursor-pointer ${
+                      cityFilter === c.cidade
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    <span className="font-semibold">{c.cidade}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${cityFilter === c.cidade ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-800'}`}>
+                      {c.total}
+                    </span>
+                    <span className={`text-[10px] font-bold ${c.taxaRecuperacao >= 60 ? 'text-emerald-600' : 'text-amber-600'} ${cityFilter === c.cidade ? 'text-emerald-300' : ''}`}>
+                      {c.taxaRecuperacao}%
+                    </span>
+                    {c.semOS > 0 && (
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${cityFilter === c.cidade ? 'bg-amber-400 text-slate-900' : 'bg-amber-100 text-amber-800 border border-amber-200'}`}>
+                        {c.semOS} sem OS
+                      </span>
+                    )}
+                  </button>
+                ))}
+                {cityFilter !== 'todas' && (
+                  <button
+                    onClick={() => setCityFilter('todas')}
+                    className="text-xs px-2.5 py-1 text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                  >
+                    Limpar filtro
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
       {/* Search & Filter Bar - 2-tier robust responsive layout */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-xs p-3.5 sm:p-4 space-y-3">
@@ -1219,5 +1638,51 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
         )}
       </div>
     </div>
+  )}
+</div>
+
+  {/* Modal de Prévia Executiva A4 */}
+  {isPreviewOpen && (
+    <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto no-print">
+      <div className="bg-slate-100 rounded-xl max-w-4xl w-full max-h-[95vh] flex flex-col shadow-2xl border border-slate-300 overflow-hidden">
+        {/* Modal Header */}
+        <div className="bg-white px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <FileText className="h-4 w-4 text-blue-600" />
+            <span className="font-bold text-sm text-slate-800">
+              Prévia do Relatório Executivo de Equipamentos (Folha A4)
+            </span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => window.print()}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-bold transition shadow-xs cursor-pointer"
+            >
+              <Printer className="h-3.5 w-3.5" />
+              <span>Imprimir Agora (PDF)</span>
+            </button>
+            <button
+              onClick={() => setIsPreviewOpen(false)}
+              className="p-1 text-slate-400 hover:text-slate-600 rounded transition cursor-pointer"
+              title="Fechar prévia"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+        {/* Modal Body: A4 Sheet Preview */}
+        <div className="p-4 sm:p-6 overflow-y-auto flex justify-center bg-slate-200/70">
+          <div className="bg-white shadow-2xl rounded-sm max-w-[780px] w-full border border-slate-300">
+            <EquipmentPrintReport
+              orders={data?.orders || []}
+              summary={summary}
+              selectedMonth={selectedMonth}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  )}
+</div>
   );
 };
