@@ -87,3 +87,13 @@ body {
     print-color-adjust: exact !important;
   }
 }
+
+/* Utilitário para ocultar barras de rolagem mantendo a funcionalidade de scroll nativo */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+

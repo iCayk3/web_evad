@@ -145,11 +145,11 @@ export function App() {
       />
 
       {/* View Switcher Tabs (Navigation) */}
-      <nav className="bg-white border-b border-slate-200 px-6 no-print">
-        <div className="max-w-6xl mx-auto flex space-x-6 text-xs">
+      <nav className="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 no-print">
+        <div className="max-w-7xl mx-auto flex space-x-2 sm:space-x-6 text-xs overflow-x-auto no-scrollbar whitespace-nowrap">
           <button
             onClick={() => setActiveView('cohort')}
-            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none ${
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
               activeView === 'cohort'
                 ? 'border-slate-900 text-slate-900 font-semibold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -161,7 +161,7 @@ export function App() {
 
           <button
             onClick={() => setActiveView('monthly')}
-            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none ${
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
               activeView === 'monthly'
                 ? 'border-slate-900 text-slate-900 font-semibold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -173,7 +173,7 @@ export function App() {
 
           <button
             onClick={() => setActiveView('annual')}
-            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none ${
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
               activeView === 'annual'
                 ? 'border-slate-900 text-slate-900 font-semibold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -185,7 +185,7 @@ export function App() {
 
           <button
             onClick={() => setActiveView('equipamentos')}
-            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none ${
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
               activeView === 'equipamentos'
                 ? 'border-slate-900 text-slate-900 font-semibold'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -198,7 +198,7 @@ export function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-6 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-6">
         {activeView === 'cohort' && (
           <>
             {/* Cohort View Mode Selector (Modelo B) */}
@@ -332,7 +332,13 @@ export function App() {
         )}
 
         {activeView === 'equipamentos' && (
-          <EquipmentRecoveryDashboard />
+          <EquipmentRecoveryDashboard
+            selectedMonth={selectedMonth}
+            onMonthChange={(m) => {
+              setSelectedMonth(m);
+              loadData(m);
+            }}
+          />
         )}
       </main>
 

@@ -87,8 +87,8 @@ export const ExecutiveHeader: React.FC<ExecutiveHeaderProps> = ({
   };
 
   return (
-    <header className="bg-white border-b border-slate-200 px-6 py-3.5 no-print">
-      <div className="max-w-6xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <header className="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3.5 no-print">
+      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         {/* Title */}
         <div>
           <div className="flex items-center space-x-2.5">
