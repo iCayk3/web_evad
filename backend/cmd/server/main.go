@@ -1340,6 +1340,7 @@ type EquipamentoItem struct {
 	AtualizadoPor           string     `json:"atualizadoPor"`
 	AtualizadoEm            *time.Time `json:"atualizadoEm"`
 	StatusFinal             string     `json:"statusFinal"`       // status consolidado exibido
+	StatusDesfecho          string     `json:"statusDesfecho"`    // 'churned', 'suspended', 'returned', 'other'
 	EquipamentoIdentificado string     `json:"equipamentoIdentificado"`
 	SerialMac               string     `json:"serialMac"`
 	EhDuplicado             bool       `json:"ehDuplicado"`
@@ -1347,6 +1348,8 @@ type EquipamentoItem struct {
 
 type EquipamentoSummary struct {
 	TotalOrders          int     `json:"totalOrders"`
+	TotalNaoRetornados   int     `json:"totalNaoRetornados"`
+	TotalRetornadosComOS int     `json:"totalRetornadosComOS"`
 	TotalDuplicados      int     `json:"totalDuplicados"`
 	Recuperados          int     `json:"recuperados"`
 	Tentando             int     `json:"tentando"`
@@ -2021,6 +2024,7 @@ func main() {
 					a.status_recuperacao, 
 					COALESCE(a.equipamento_identificado, '') as equipamento_identificado, 
 					COALESCE(a.serial_mac, '') as serial_mac,
+					ec.status_desfecho,
 					ROW_NUMBER() OVER (
 						PARTITION BY a.id, ec.codigo_clean 
 						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END, 
@@ -2036,12 +2040,12 @@ func main() {
 					id, protocolo, codigo_cliente, nome_cliente, cidade, bairro, contrato, plano,
 					data_abertura, data_encerramento, mes_competencia, situacao_os, topico,
 					assunto, solucao, causa, usuario_abertura, status_recuperacao,
-					equipamento_identificado, serial_mac,
+					equipamento_identificado, serial_mac, status_desfecho,
 					(dup_rank > 1) as eh_duplicado
 				FROM raw_atends
 			),
-			raw_churn_sem_os AS (
-				SELECT 
+			raw_sem_os AS (
+				SELECT DISTINCT ON (ec.codigo_clean)
 					'SEM-OS-' || ec.codigo_rbx as id,
 					'S/N' as protocolo,
 					ec.codigo_rbx as codigo_cliente,
@@ -2055,35 +2059,41 @@ func main() {
 					$1 as mes_competencia,
 					'SEM OS' as situacao_os,
 					'SEM ORDEM DE SERVIÇO' as topico,
-					'Cliente cancelado (' || COALESCE(ec.motivo_cancelamento, 'Inadimplência') || ') sem abertura de OS de retirada no RBX.' as assunto,
+					CASE 
+						WHEN ec.status_desfecho = 'churned' THEN 'Cliente cancelado (' || COALESCE(ec.motivo_cancelamento, 'Inadimplência') || ') sem abertura de OS de retirada no RBX.'
+						ELSE 'Cliente ainda suspenso por inadimplência sem abertura de OS de recolhimento no RBX.'
+					END as assunto,
 					'' as solucao,
-					COALESCE(ec.motivo_cancelamento, 'Cancelamento sem chamado de recolhimento') as causa,
-					'Auditoria Churn' as usuario_abertura,
+					CASE 
+						WHEN ec.status_desfecho = 'churned' THEN COALESCE(ec.motivo_cancelamento, 'Cancelamento sem chamado de recolhimento')
+						ELSE 'Suspensão prolongada sem chamado de recolhimento'
+					END as causa,
+					'Auditoria Ponto Cego' as usuario_abertura,
 					'sem_os' as status_recuperacao,
 					'Equipamento em posse do cliente (Em Risco)' as equipamento_identificado,
 					'-' as serial_mac,
-					ROW_NUMBER() OVER (
-						PARTITION BY ec.codigo_clean
-						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
-						         ec.data_bloqueio DESC
-					) as dup_rank
+					ec.status_desfecho,
+					false as eh_duplicado
 				FROM excel_clients ec
 				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
-				WHERE ec.status_desfecho = 'churned'
+				WHERE ec.status_desfecho IN ('churned', 'suspended')
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
 					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
 					    AND (ae.mes_competencia = $1 OR (ae.data_abertura >= ec.data_bloqueio - interval '15 days' AND ae.data_abertura <= ec.data_bloqueio + interval '120 days'))
 				  )
+				ORDER BY ec.codigo_clean, 
+				         CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
+				         c.criado_em DESC NULLS LAST
 			),
-			churn_sem_os AS (
+			sem_os AS (
 				SELECT 
 					id, protocolo, codigo_cliente, nome_cliente, cidade, bairro, contrato, plano,
 					data_abertura, data_encerramento, mes_competencia, situacao_os, topico,
 					assunto, solucao, causa, usuario_abertura, status_recuperacao,
-					equipamento_identificado, serial_mac,
-					(dup_rank > 1) as eh_duplicado
-				FROM raw_churn_sem_os
+					equipamento_identificado, serial_mac, status_desfecho,
+					eh_duplicado
+				FROM raw_sem_os
 			)
 			SELECT 
 				u.*,
@@ -2094,7 +2104,7 @@ func main() {
 			FROM (
 				SELECT * FROM atends
 				UNION ALL
-				SELECT * FROM churn_sem_os
+				SELECT * FROM sem_os
 			) u
 			LEFT JOIN auditoria_equipamentos_manual aem ON aem.registro_id = u.id
 			ORDER BY 
@@ -2123,7 +2133,7 @@ func main() {
 				&item.DataAbertura, &item.DataEncerramento, &item.MesCompetencia,
 				&item.SituacaoOS, &item.Topico, &item.Assunto, &item.Solucao, &item.Causa,
 				&item.UsuarioAbertura, &item.StatusRecuperacao, &item.EquipamentoIdentificado, &item.SerialMac,
-				&item.EhDuplicado,
+				&item.StatusDesfecho, &item.EhDuplicado,
 				&item.StatusManual, &item.ObservacaoManual, &item.AtualizadoPor, &item.AtualizadoEm,
 			)
 			if err != nil {
@@ -2152,6 +2162,11 @@ func main() {
 				summary.TotalDuplicados++
 			} else {
 				summary.TotalOrders++
+				if item.StatusDesfecho == "churned" || item.StatusDesfecho == "suspended" {
+					summary.TotalNaoRetornados++
+				} else if item.StatusDesfecho == "returned" {
+					summary.TotalRetornadosComOS++
+				}
 				switch item.StatusFinal {
 				case "recuperado":
 					summary.Recuperados++

@@ -167,6 +167,7 @@ export interface EquipamentoItem {
   atualizadoPor?: string;
   atualizadoEm?: string | null;
   statusFinal?: 'recuperado' | 'tentando' | 'perdido' | 'ativo_cobranca' | 'sem_os' | 'outro';
+  statusDesfecho?: 'churned' | 'suspended' | 'returned' | 'other' | string;
   equipamentoIdentificado: string;
   serialMac: string;
   ehDuplicado: boolean;
@@ -174,6 +175,8 @@ export interface EquipamentoItem {
 
 export interface EquipamentoSummary {
   totalOrders: number;
+  totalNaoRetornados?: number;
+  totalRetornadosComOS?: number;
   totalDuplicados: number;
   recuperados: number;
   tentando: number;

@@ -21,6 +21,7 @@ import {
   EyeOff,
   GitBranch,
   Sparkles,
+  ShieldAlert,
 } from 'lucide-react';
 import { API_BASE } from '../config/api';
 import type { EquipamentoResponse, EquipamentoItem } from '../types';
@@ -101,6 +102,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(propMonth || '2026-01');
+  const [cohortFilter, setCohortFilter] = useState<'nao_retornados' | 'retornados' | 'todos'>('nao_retornados');
   const [statusFilter, setStatusFilter] = useState<string>('todos');
 
   // Sincroniza com a competência global caso o usuário navegue no cabeçalho superior
@@ -231,18 +233,101 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     }
   };
 
+  const cohortCounts = useMemo(() => {
+    if (!data?.orders) return { naoRetornados: 0, retornados: 0, todos: 0 };
+    let naoRet = 0, ret = 0, tod = 0;
+    data.orders.forEach((o) => {
+      if (o.ehDuplicado) return;
+      tod++;
+      if (o.statusDesfecho === 'churned' || o.statusDesfecho === 'suspended') {
+        naoRet++;
+      } else if (o.statusDesfecho === 'returned') {
+        ret++;
+      }
+    });
+    return { naoRetornados: naoRet, retornados: ret, todos: tod };
+  }, [data?.orders]);
+
+  const summary = useMemo(() => {
+    if (!data?.orders) {
+      return (
+        data?.summary || {
+          totalOrders: 0,
+          totalDuplicados: 0,
+          recuperados: 0,
+          tentando: 0,
+          perdidos: 0,
+          ativoCobranca: 0,
+          pendentes: 0,
+          emAndamento: 0,
+          cancelamentoAbortado: 0,
+          semOS: 0,
+          taxaRecuperacao: 0,
+          taxaEfetividadeOS: 0,
+        }
+      );
+    }
+
+    let total = 0, rec = 0, tent = 0, perd = 0, ativ = 0, sem = 0;
+    data.orders.forEach((o) => {
+      if (o.ehDuplicado) return;
+      if (cohortFilter === 'nao_retornados' && o.statusDesfecho !== 'churned' && o.statusDesfecho !== 'suspended') {
+        return;
+      }
+      if (cohortFilter === 'retornados' && o.statusDesfecho !== 'returned') {
+        return;
+      }
+
+      total++;
+      const s = o.statusFinal || o.statusManual || o.statusRecuperacao;
+      if (s === 'recuperado') rec++;
+      else if (s === 'tentando' || s === 'pendente' || s === 'em_andamento') tent++;
+      else if (s === 'perdido') perd++;
+      else if (s === 'ativo_cobranca' || s === 'cancelamento_abortado') ativ++;
+      else if (s === 'sem_os') sem++;
+    });
+
+    const taxaRec = total > 0 ? Math.round((rec / total) * 1000) / 10 : 0;
+    const taxaEfet = (rec + tent + perd) > 0 ? Math.round((rec / (rec + tent + perd)) * 1000) / 10 : 0;
+
+    return {
+      totalOrders: total,
+      totalDuplicados: data.summary?.totalDuplicados || 0,
+      recuperados: rec,
+      tentando: tent,
+      perdidos: perd,
+      ativoCobranca: ativ,
+      pendentes: tent,
+      emAndamento: 0,
+      cancelamentoAbortado: ativ,
+      semOS: sem,
+      taxaRecuperacao: taxaRec,
+      taxaEfetividadeOS: taxaEfet,
+    };
+  }, [data?.orders, data?.summary, cohortFilter]);
+
   const citiesList = useMemo(() => {
     if (!data?.orders) return [];
     const set = new Set<string>();
     data.orders.forEach((o) => {
+      if (cohortFilter === 'nao_retornados' && o.statusDesfecho !== 'churned' && o.statusDesfecho !== 'suspended') return;
+      if (cohortFilter === 'retornados' && o.statusDesfecho !== 'returned') return;
       if (o.cidade && o.cidade !== 'Não Informado') set.add(o.cidade);
     });
     return Array.from(set).sort();
-  }, [data?.orders]);
+  }, [data?.orders, cohortFilter]);
 
   const filteredOrders = useMemo(() => {
     if (!data?.orders) return [];
     return data.orders.filter((order) => {
+      // Filtro de Foco da Coorte
+      if (cohortFilter === 'nao_retornados' && order.statusDesfecho !== 'churned' && order.statusDesfecho !== 'suspended') {
+        return false;
+      }
+      if (cohortFilter === 'retornados' && order.statusDesfecho !== 'returned') {
+        return false;
+      }
+
       // Filtro de duplicados (preferivelmente manter oculto por padrão)
       if (!showDuplicates && order.ehDuplicado) {
         return false;
@@ -298,7 +383,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       }
       return true;
     });
-  }, [data?.orders, showDuplicates, statusFilter, cityFilter, searchTerm]);
+  }, [data?.orders, cohortFilter, showDuplicates, statusFilter, cityFilter, searchTerm]);
 
   const toggleExpand = (id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -312,21 +397,6 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     } catch {
       return dateStr;
     }
-  };
-
-  const summary = data?.summary || {
-    totalOrders: 0,
-    totalDuplicados: 0,
-    recuperados: 0,
-    tentando: 0,
-    perdidos: 0,
-    ativoCobranca: 0,
-    pendentes: 0,
-    emAndamento: 0,
-    cancelamentoAbortado: 0,
-    semOS: 0,
-    taxaRecuperacao: 0,
-    taxaEfetividadeOS: 0,
   };
 
   return (
@@ -409,13 +479,17 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
         {/* Card 1: Total */}
         <div className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Total em Atenção</span>
+            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">
+              {cohortFilter === 'nao_retornados' ? 'Não Retornaram' : cohortFilter === 'retornados' ? 'Retornaram com OS' : 'Total em Atenção'}
+            </span>
             <Layers className="w-4 h-4 text-slate-400 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-extrabold text-slate-900">
             {loading ? '...' : summary.totalOrders}
           </div>
-          <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 truncate">Clientes da competência</p>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 truncate">
+            {cohortFilter === 'nao_retornados' ? 'Contratos Churn + Suspensos' : cohortFilter === 'retornados' ? 'Reativados na base' : 'Clientes da competência'}
+          </p>
         </div>
 
         {/* Card 2: Recuperados */}
@@ -531,6 +605,69 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
           </div>
         </div>
       )}
+
+      {/* Seletor de Foco da Auditoria: Não Retornados (68) vs Voltaram à Base com OS (17) vs Todos */}
+      <div className="bg-slate-100/90 border border-slate-200/90 rounded-xl p-1.5 flex flex-wrap sm:flex-nowrap items-center gap-1.5 shadow-2xs">
+        <button
+          onClick={() => {
+            setCohortFilter('nao_retornados');
+            setStatusFilter('todos');
+          }}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition cursor-pointer select-none ${
+            cohortFilter === 'nao_retornados'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <ShieldAlert className={`w-4 h-4 ${cohortFilter === 'nao_retornados' ? 'text-amber-400' : 'text-amber-600'}`} />
+          <span>Não Retornaram / Em Risco</span>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+            cohortFilter === 'nao_retornados' ? 'bg-amber-400 text-slate-950 font-extrabold' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {cohortCounts.naoRetornados}
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
+            setCohortFilter('retornados');
+            setStatusFilter('todos');
+          }}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition cursor-pointer select-none ${
+            cohortFilter === 'retornados'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <RotateCcw className={`w-4 h-4 ${cohortFilter === 'retornados' ? 'text-emerald-400' : 'text-emerald-600'}`} />
+          <span>Voltaram à Base com OS</span>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+            cohortFilter === 'retornados' ? 'bg-emerald-400 text-slate-950 font-extrabold' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {cohortCounts.retornados}
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
+            setCohortFilter('todos');
+            setStatusFilter('todos');
+          }}
+          className={`sm:flex-initial flex items-center justify-center gap-2 py-2 px-3.5 rounded-lg text-xs font-bold transition cursor-pointer select-none ${
+            cohortFilter === 'todos'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <Layers className={`w-4 h-4 ${cohortFilter === 'todos' ? 'text-blue-400' : 'text-slate-500'}`} />
+          <span>Todos da Planilha</span>
+          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+            cohortFilter === 'todos' ? 'bg-blue-400 text-slate-950 font-extrabold' : 'bg-slate-200 text-slate-700'
+          }`}>
+            {cohortCounts.todos}
+          </span>
+        </button>
+      </div>
 
       {/* Search & Filter Bar - 2-tier robust responsive layout */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-xs p-3.5 sm:p-4 space-y-3">
@@ -718,9 +855,24 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                         <td className="py-3 px-3 font-medium text-slate-900">
                           <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
                             <span>{order.nomeCliente}</span>
+                            {order.statusDesfecho === 'churned' && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-rose-100 text-rose-800 border border-rose-300">
+                                CANCELADO (CHURN)
+                              </span>
+                            )}
+                            {order.statusDesfecho === 'suspended' && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300">
+                                SUSPENSO
+                              </span>
+                            )}
+                            {order.statusDesfecho === 'returned' && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                VOLTOU ATIVO
+                              </span>
+                            )}
                             {order.ehDuplicado && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center gap-0.5">
-                                <AlertCircle className="w-3 h-3 text-amber-600" />
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-300 inline-flex items-center gap-0.5">
+                                <AlertCircle className="w-3 h-3 text-slate-500" />
                                 Duplicata RBX
                               </span>
                             )}
