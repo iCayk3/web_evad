@@ -1942,14 +1942,12 @@ func main() {
 			}
 		}
 
-		// Meses disponíveis na base (unindo atendimentos e bloqueios)
+		// Meses disponíveis na base (estritamente baseados nas planilhas importadas de competência)
 		var availMonths []string
 		mRows, err := dbPool.Query(ctx, `
-			SELECT DISTINCT mes_competencia FROM (
-				SELECT mes_competencia FROM atendimentos_equipamentos WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
-				UNION
-				SELECT mes_competencia FROM eventos_bloqueio WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
-			) m 
+			SELECT DISTINCT mes_competencia 
+			FROM eventos_bloqueio 
+			WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
 			ORDER BY mes_competencia DESC
 		`)
 		if err == nil {
@@ -1962,23 +1960,38 @@ func main() {
 			}
 		}
 
-		// Atendimentos do mês selecionado com enriquecimento cadastral
-		// + Detecção e flag de duplicatas de clientes (dup_rank)
-		// + Auditoria Cruzada de Clientes Churned sem OS aberta no RBX
+		// Filtro Estrito: Apenas clientes que constavam na planilha Excel importada daquele mês ($1)
+		// + Cruzamento com OSs de retirada abertas no RBX
+		// + Identificação de pontos cegos (churn sem OS aberta no RBX)
+		// + Deduplicação cadastral transparente
 		equipQuery := `
-			WITH raw_atends AS (
+			WITH excel_clients AS (
+				SELECT DISTINCT 
+					eb.codigo_rbx,
+					REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') as codigo_clean,
+					eb.contrato,
+					eb.plano,
+					eb.bairro,
+					eb.data_bloqueio,
+					eb.status_desfecho,
+					eb.motivo_cancelamento
+				FROM eventos_bloqueio eb
+				WHERE eb.mes_competencia = $1
+				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+			),
+			raw_atends AS (
 				SELECT 
 					a.id, 
 					COALESCE(a.protocolo, '') as protocolo, 
-					a.codigo_cliente, 
-					COALESCE(c.nome, 'Cliente ' || a.codigo_cliente) as nome_cliente,
+					ec.codigo_rbx as codigo_cliente, 
+					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
 					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
-					COALESCE(NULLIF(INITCAP(TRIM(c.bairro)), ''), 'Não Informado') as bairro,
-					COALESCE(c.contrato, a.contrato, '') as contrato,
-					COALESCE(c.plano, '') as plano,
+					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(c.bairro, ''), ec.bairro))), ''), 'Não Informado') as bairro,
+					COALESCE(c.contrato, ec.contrato, a.contrato, '') as contrato,
+					COALESCE(c.plano, ec.plano, '') as plano,
 					a.data_abertura, 
 					a.data_encerramento, 
-					COALESCE(a.mes_competencia, '') as mes_competencia,
+					$1 as mes_competencia,
 					COALESCE(a.situacao_os, '') as situacao_os, 
 					COALESCE(a.topico, '') as topico, 
 					COALESCE(a.assunto, '') as assunto, 
@@ -1989,13 +2002,14 @@ func main() {
 					COALESCE(a.equipamento_identificado, '') as equipamento_identificado, 
 					COALESCE(a.serial_mac, '') as serial_mac,
 					ROW_NUMBER() OVER (
-						PARTITION BY a.id 
+						PARTITION BY a.id, ec.codigo_clean 
 						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END, 
 						         c.criado_em DESC
 					) as dup_rank
 				FROM atendimentos_equipamentos a
-				LEFT JOIN clientes c ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
-				WHERE a.mes_competencia = $1
+				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				WHERE (a.mes_competencia = $1 OR (a.data_abertura >= ec.data_bloqueio - interval '15 days' AND a.data_abertura <= ec.data_bloqueio + interval '120 days'))
 			),
 			atends AS (
 				SELECT 
@@ -2008,39 +2022,38 @@ func main() {
 			),
 			raw_churn_sem_os AS (
 				SELECT 
-					'SEM-OS-' || eb.codigo_rbx as id,
+					'SEM-OS-' || ec.codigo_rbx as id,
 					'S/N' as protocolo,
-					eb.codigo_rbx as codigo_cliente,
-					COALESCE(c.nome, 'Cliente ' || eb.codigo_rbx) as nome_cliente,
+					ec.codigo_rbx as codigo_cliente,
+					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
 					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
-					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(eb.bairro, ''), c.bairro))), ''), 'Não Informado') as bairro,
-					COALESCE(eb.contrato, c.contrato, '') as contrato,
-					COALESCE(eb.plano, c.plano, '') as plano,
-					eb.data_bloqueio as data_abertura,
+					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(ec.bairro, ''), c.bairro))), ''), 'Não Informado') as bairro,
+					COALESCE(ec.contrato, c.contrato, '') as contrato,
+					COALESCE(ec.plano, c.plano, '') as plano,
+					ec.data_bloqueio as data_abertura,
 					NULL::timestamp with time zone as data_encerramento,
-					eb.mes_competencia,
+					$1 as mes_competencia,
 					'SEM OS' as situacao_os,
 					'SEM ORDEM DE SERVIÇO' as topico,
-					'Cliente cancelado (' || COALESCE(eb.motivo_cancelamento, 'Inadimplência') || ') sem abertura de OS de retirada no RBX.' as assunto,
+					'Cliente cancelado (' || COALESCE(ec.motivo_cancelamento, 'Inadimplência') || ') sem abertura de OS de retirada no RBX.' as assunto,
 					'' as solucao,
-					COALESCE(eb.motivo_cancelamento, 'Cancelamento sem chamado de recolhimento') as causa,
+					COALESCE(ec.motivo_cancelamento, 'Cancelamento sem chamado de recolhimento') as causa,
 					'Auditoria Churn' as usuario_abertura,
 					'sem_os' as status_recuperacao,
 					'Equipamento em posse do cliente (Em Risco)' as equipamento_identificado,
 					'-' as serial_mac,
 					ROW_NUMBER() OVER (
-						PARTITION BY REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '')
+						PARTITION BY ec.codigo_clean
 						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
-						         eb.data_bloqueio DESC
+						         ec.data_bloqueio DESC
 					) as dup_rank
-				FROM eventos_bloqueio eb
-				JOIN clientes c ON c.codigo_rbx = eb.codigo_rbx
-				WHERE eb.mes_competencia = $1
-				  AND eb.status_desfecho = 'churned'
-				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+				FROM excel_clients ec
+				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				WHERE ec.status_desfecho = 'churned'
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
-					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '')
+					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
+					    AND (ae.mes_competencia = $1 OR (ae.data_abertura >= ec.data_bloqueio - interval '15 days' AND ae.data_abertura <= ec.data_bloqueio + interval '120 days'))
 				  )
 			),
 			churn_sem_os AS (

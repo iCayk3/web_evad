@@ -24,6 +24,27 @@ import {
 import { API_BASE } from '../config/api';
 import type { EquipamentoResponse } from '../types';
 
+const formatMonthLabel = (monthKey: string) => {
+  if (!monthKey) return '';
+  const [year, month] = monthKey.split('-');
+  const monthNames: Record<string, string> = {
+    '01': 'Janeiro',
+    '02': 'Fevereiro',
+    '03': 'Março',
+    '04': 'Abril',
+    '05': 'Maio',
+    '06': 'Junho',
+    '07': 'Julho',
+    '08': 'Agosto',
+    '09': 'Setembro',
+    '10': 'Outubro',
+    '11': 'Novembro',
+    '12': 'Dezembro',
+  };
+  const name = monthNames[month] || month;
+  return `${name} / ${year}`;
+};
+
 interface ParsedFlow {
   topico: string;
   causa: string;
@@ -282,7 +303,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                 </span>
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Auditoria de ordens de serviço de retirada, verificação de ONT/Roteador em comodato e motivos de insucesso
+                Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
               </p>
             </div>
           </div>
@@ -301,11 +322,11 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               {data?.availableMonths && data.availableMonths.length > 0 ? (
                 data.availableMonths.map((m) => (
                   <option key={m} value={m}>
-                    {m === '2026-01' ? 'Janeiro / 2026 (Base Teste)' : m}
+                    {formatMonthLabel(m)}
                   </option>
                 ))
               ) : (
-                <option value="2026-01">Janeiro / 2026 (Base Teste)</option>
+                <option value={selectedMonth}>{formatMonthLabel(selectedMonth)}</option>
               )}
             </select>
           </div>
