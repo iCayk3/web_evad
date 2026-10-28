@@ -220,6 +220,18 @@ func initDB() {
 		CREATE INDEX IF NOT EXISTS idx_equip_cliente ON atendimentos_equipamentos(codigo_cliente);
 		CREATE INDEX IF NOT EXISTS idx_equip_status ON atendimentos_equipamentos(status_recuperacao);
 
+		-- Classificação e Auditoria Manual de Equipamentos (Recuperado, Tentando, Perdido, Voltou Ativo)
+		CREATE TABLE IF NOT EXISTS auditoria_equipamentos_manual (
+			registro_id VARCHAR(100) PRIMARY KEY,
+			codigo_cliente VARCHAR(50) NOT NULL,
+			status_manual VARCHAR(50) NOT NULL,
+			observacao TEXT,
+			atualizado_por VARCHAR(100) DEFAULT 'Operador',
+			atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_auditoria_equip_reg ON auditoria_equipamentos_manual(registro_id);
+		CREATE INDEX IF NOT EXISTS idx_auditoria_equip_cli ON auditoria_equipamentos_manual(codigo_cliente);
+
 		-- Cancelamentos com motivo "SEM USO" são Churn real (cliente pagava sem usar o ponto de internet)
 		UPDATE eventos_bloqueio
 		SET status_desfecho = 'churned',
@@ -1322,7 +1334,12 @@ type EquipamentoItem struct {
 	Solucao                 string     `json:"solucao"`
 	Causa                   string     `json:"causa"`
 	UsuarioAbertura         string     `json:"usuarioAbertura"`
-	StatusRecuperacao       string     `json:"statusRecuperacao"` // 'recuperado', 'pendente', 'em_andamento', 'cancelamento_abortado'
+	StatusRecuperacao       string     `json:"statusRecuperacao"` // status automático RBX: 'recuperado', 'pendente', 'em_andamento', 'cancelamento_abortado', 'sem_os'
+	StatusManual            string     `json:"statusManual"`      // 'recuperado', 'tentando', 'perdido', 'ativo_cobranca'
+	ObservacaoManual        string     `json:"observacaoManual"`
+	AtualizadoPor           string     `json:"atualizadoPor"`
+	AtualizadoEm            *time.Time `json:"atualizadoEm"`
+	StatusFinal             string     `json:"statusFinal"`       // status consolidado exibido
 	EquipamentoIdentificado string     `json:"equipamentoIdentificado"`
 	SerialMac               string     `json:"serialMac"`
 	EhDuplicado             bool       `json:"ehDuplicado"`
@@ -1332,10 +1349,13 @@ type EquipamentoSummary struct {
 	TotalOrders          int     `json:"totalOrders"`
 	TotalDuplicados      int     `json:"totalDuplicados"`
 	Recuperados          int     `json:"recuperados"`
+	Tentando             int     `json:"tentando"`
+	Perdidos             int     `json:"perdidos"`
+	AtivoCobranca        int     `json:"ativoCobranca"`
+	SemOS                int     `json:"semOS"`
 	Pendentes            int     `json:"pendentes"`
 	EmAndamento          int     `json:"emAndamento"`
 	CancelamentoAbortado int     `json:"cancelamentoAbortado"`
-	SemOS                int     `json:"semOS"`
 	TaxaRecuperacao      float64 `json:"taxaRecuperacao"`
 	TaxaEfetividadeOS    float64 `json:"taxaEfetividadeOS"`
 }
@@ -2065,13 +2085,20 @@ func main() {
 					(dup_rank > 1) as eh_duplicado
 				FROM raw_churn_sem_os
 			)
-			SELECT * FROM (
+			SELECT 
+				u.*,
+				COALESCE(aem.status_manual, '') as status_manual,
+				COALESCE(aem.observacao, '') as observacao_manual,
+				COALESCE(aem.atualizado_por, '') as atualizado_por,
+				aem.atualizado_em
+			FROM (
 				SELECT * FROM atends
 				UNION ALL
 				SELECT * FROM churn_sem_os
 			) u
+			LEFT JOIN auditoria_equipamentos_manual aem ON aem.registro_id = u.id
 			ORDER BY 
-				CASE WHEN status_recuperacao = 'sem_os' THEN 1 ELSE 0 END,
+				CASE WHEN status_recuperacao = 'sem_os' AND (aem.status_manual IS NULL OR aem.status_manual = '') THEN 1 ELSE 0 END,
 				eh_duplicado ASC,
 				data_encerramento DESC NULLS LAST, 
 				data_abertura DESC
@@ -2097,23 +2124,44 @@ func main() {
 				&item.SituacaoOS, &item.Topico, &item.Assunto, &item.Solucao, &item.Causa,
 				&item.UsuarioAbertura, &item.StatusRecuperacao, &item.EquipamentoIdentificado, &item.SerialMac,
 				&item.EhDuplicado,
+				&item.StatusManual, &item.ObservacaoManual, &item.AtualizadoPor, &item.AtualizadoEm,
 			)
 			if err != nil {
 				continue
+			}
+
+			// Consolidação do Status Final (Manual do usuário tem soberania sobre detecção automática RBX)
+			if item.StatusManual != "" {
+				item.StatusFinal = item.StatusManual
+			} else {
+				switch item.StatusRecuperacao {
+				case "recuperado":
+					item.StatusFinal = "recuperado"
+				case "cancelamento_abortado":
+					item.StatusFinal = "ativo_cobranca"
+				case "sem_os":
+					item.StatusFinal = "sem_os"
+				case "em_andamento", "pendente":
+					item.StatusFinal = "tentando"
+				default:
+					item.StatusFinal = item.StatusRecuperacao
+				}
 			}
 
 			if item.EhDuplicado {
 				summary.TotalDuplicados++
 			} else {
 				summary.TotalOrders++
-				switch item.StatusRecuperacao {
+				switch item.StatusFinal {
 				case "recuperado":
 					summary.Recuperados++
-				case "pendente":
+				case "tentando":
+					summary.Tentando++
 					summary.Pendentes++
-				case "em_andamento":
-					summary.EmAndamento++
-				case "cancelamento_abortado":
+				case "perdido":
+					summary.Perdidos++
+				case "ativo_cobranca":
+					summary.AtivoCobranca++
 					summary.CancelamentoAbortado++
 				case "sem_os":
 					summary.SemOS++
@@ -2127,11 +2175,11 @@ func main() {
 					cityMap[cidade] = &EquipamentoCityStats{Cidade: cidade}
 				}
 				cityMap[cidade].Total++
-				if item.StatusRecuperacao == "recuperado" {
+				if item.StatusFinal == "recuperado" {
 					cityMap[cidade].Recuperados++
-				} else if item.StatusRecuperacao == "pendente" {
+				} else if item.StatusFinal == "tentando" {
 					cityMap[cidade].Pendentes++
-				} else if item.StatusRecuperacao == "sem_os" {
+				} else if item.StatusFinal == "sem_os" {
 					cityMap[cidade].SemOS++
 				}
 			}
@@ -2142,8 +2190,8 @@ func main() {
 		if summary.TotalOrders > 0 {
 			summary.TaxaRecuperacao = math.Round((float64(summary.Recuperados)/float64(summary.TotalOrders))*1000) / 10
 		}
-		if (summary.Recuperados + summary.Pendentes) > 0 {
-			summary.TaxaEfetividadeOS = math.Round((float64(summary.Recuperados)/float64(summary.Recuperados+summary.Pendentes))*1000) / 10
+		if (summary.Recuperados + summary.Tentando + summary.Perdidos) > 0 {
+			summary.TaxaEfetividadeOS = math.Round((float64(summary.Recuperados)/float64(summary.Recuperados+summary.Tentando+summary.Perdidos))*1000) / 10
 		}
 
 		var byCity []EquipamentoCityStats
@@ -2163,6 +2211,68 @@ func main() {
 			ByCity:          byCity,
 			AvailableMonths: availMonths,
 			SelectedMonth:   month,
+		})
+	})
+
+	type ClassificarEquipamentoRequest struct {
+		RegistroID    string `json:"registroId"`
+		CodigoCliente string `json:"codigoCliente"`
+		StatusManual  string `json:"statusManual"` // 'recuperado', 'tentando', 'perdido', 'ativo_cobranca', ''
+		Observacao    string `json:"observacao"`
+		AtualizadoPor string `json:"atualizadoPor"`
+	}
+
+	r.Post("/api/equipamentos/classificar", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		var req ClassificarEquipamentoRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error": "JSON inválido"}`, http.StatusBadRequest)
+			return
+		}
+
+		req.RegistroID = strings.TrimSpace(req.RegistroID)
+		if req.RegistroID == "" {
+			http.Error(w, `{"error": "registroId é obrigatório"}`, http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		if req.AtualizadoPor == "" {
+			req.AtualizadoPor = "Operador"
+		}
+
+		if req.StatusManual == "" && strings.TrimSpace(req.Observacao) == "" {
+			_, err := dbPool.Exec(ctx, "DELETE FROM auditoria_equipamentos_manual WHERE registro_id = $1", req.RegistroID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "Erro ao resetar classificação: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			query := `
+				INSERT INTO auditoria_equipamentos_manual (registro_id, codigo_cliente, status_manual, observacao, atualizado_por, atualizado_em)
+				VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+				ON CONFLICT (registro_id) 
+				DO UPDATE SET 
+					status_manual = EXCLUDED.status_manual,
+					observacao = EXCLUDED.observacao,
+					atualizado_por = EXCLUDED.atualizado_por,
+					atualizado_em = CURRENT_TIMESTAMP
+			`
+			_, err := dbPool.Exec(ctx, query, req.RegistroID, req.CodigoCliente, req.StatusManual, req.Observacao, req.AtualizadoPor)
+			if err != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "Erro ao salvar classificação: %v"}`, err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Classificação do equipamento salva com sucesso!",
 		})
 	})
 

@@ -162,6 +162,11 @@ export interface EquipamentoItem {
   causa: string;
   usuarioAbertura: string;
   statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'sem_os' | 'outro';
+  statusManual?: 'recuperado' | 'tentando' | 'perdido' | 'ativo_cobranca' | '';
+  observacaoManual?: string;
+  atualizadoPor?: string;
+  atualizadoEm?: string | null;
+  statusFinal?: 'recuperado' | 'tentando' | 'perdido' | 'ativo_cobranca' | 'sem_os' | 'outro';
   equipamentoIdentificado: string;
   serialMac: string;
   ehDuplicado: boolean;
@@ -171,10 +176,13 @@ export interface EquipamentoSummary {
   totalOrders: number;
   totalDuplicados: number;
   recuperados: number;
+  tentando: number;
+  perdidos: number;
+  ativoCobranca: number;
+  semOS: number;
   pendentes: number;
   emAndamento: number;
   cancelamentoAbortado: number;
-  semOS: number;
   taxaRecuperacao: number;
   taxaEfetividadeOS?: number;
 }

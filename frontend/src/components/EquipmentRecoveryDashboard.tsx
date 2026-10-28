@@ -20,9 +20,10 @@ import {
   Eye,
   EyeOff,
   GitBranch,
+  Sparkles,
 } from 'lucide-react';
 import { API_BASE } from '../config/api';
-import type { EquipamentoResponse } from '../types';
+import type { EquipamentoResponse, EquipamentoItem } from '../types';
 
 const formatMonthLabel = (monthKey: string) => {
   if (!monthKey) return '';
@@ -160,6 +161,76 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     }
   };
 
+  const handleStatusChange = async (order: EquipamentoItem, newStatus: string, obs?: string) => {
+    // Atualização otimista imediata na UI
+    setData((prevData) => {
+      if (!prevData) return prevData;
+      const updatedOrders = prevData.orders.map((o) => {
+        if (o.id === order.id) {
+          return {
+            ...o,
+            statusManual: (newStatus || '') as any,
+            statusFinal: (newStatus || o.statusRecuperacao) as any,
+            observacaoManual: obs !== undefined ? obs : o.observacaoManual,
+            atualizadoEm: new Date().toISOString(),
+            atualizadoPor: 'Operador',
+          };
+        }
+        return o;
+      });
+
+      // Recalcula resumo de métricas
+      let rec = 0, tent = 0, perd = 0, ativ = 0, sem = 0;
+      updatedOrders.forEach((o) => {
+        if (o.ehDuplicado) return;
+        const s = o.statusFinal || o.statusManual || o.statusRecuperacao;
+        if (s === 'recuperado') rec++;
+        else if (s === 'tentando' || s === 'pendente' || s === 'em_andamento') tent++;
+        else if (s === 'perdido') perd++;
+        else if (s === 'ativo_cobranca' || s === 'cancelamento_abortado') ativ++;
+        else if (s === 'sem_os') sem++;
+      });
+
+      const newSummary = {
+        ...prevData.summary,
+        recuperados: rec,
+        tentando: tent,
+        perdidos: perd,
+        ativoCobranca: ativ,
+        semOS: sem,
+        taxaRecuperacao: prevData.summary.totalOrders > 0
+          ? Math.round((rec / prevData.summary.totalOrders) * 1000) / 10
+          : 0,
+      };
+
+      return {
+        ...prevData,
+        orders: updatedOrders,
+        summary: newSummary,
+      };
+    });
+
+    try {
+      const res = await fetch(`${API_BASE}/api/equipamentos/classificar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          registroId: order.id,
+          codigoCliente: order.codigoCliente,
+          statusManual: newStatus,
+          observacao: obs !== undefined ? obs : (order.observacaoManual || ''),
+          atualizadoPor: 'Operador',
+        }),
+      });
+      if (res.ok) {
+        setSyncMessage({ text: 'Situação do equipamento salva com sucesso!', isError: false });
+        setTimeout(() => setSyncMessage(null), 3000);
+      }
+    } catch (err) {
+      console.error('Falha ao enviar classificação manual:', err);
+    }
+  };
+
   const citiesList = useMemo(() => {
     if (!data?.orders) return [];
     const set = new Set<string>();
@@ -176,9 +247,24 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       if (!showDuplicates && order.ehDuplicado) {
         return false;
       }
-      // Status Filter
-      if (statusFilter !== 'todos' && order.statusRecuperacao !== statusFilter) {
-        return false;
+      // Status Filter consolidando statusFinal / statusManual / statusRecuperacao
+      if (statusFilter !== 'todos') {
+        const itemStatus = order.statusFinal || order.statusManual || order.statusRecuperacao;
+        if (statusFilter === 'recuperado' && itemStatus !== 'recuperado') {
+          return false;
+        }
+        if (statusFilter === 'tentando' && itemStatus !== 'tentando' && itemStatus !== 'pendente' && itemStatus !== 'em_andamento') {
+          return false;
+        }
+        if (statusFilter === 'perdido' && itemStatus !== 'perdido') {
+          return false;
+        }
+        if (statusFilter === 'ativo_cobranca' && itemStatus !== 'ativo_cobranca' && itemStatus !== 'cancelamento_abortado') {
+          return false;
+        }
+        if (statusFilter === 'sem_os' && itemStatus !== 'sem_os') {
+          return false;
+        }
       }
       // City Filter
       if (cityFilter !== 'todas' && order.cidade !== cityFilter) {
@@ -228,56 +314,13 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'recuperado':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-            Recuperado
-          </span>
-        );
-      case 'pendente':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-            <PackageX className="w-3.5 h-3.5 text-rose-600" />
-            Não Recuperado / Pendente
-          </span>
-        );
-      case 'em_andamento':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-            <Clock className="w-3.5 h-3.5 text-amber-600" />
-            Em Andamento
-          </span>
-        );
-      case 'sem_os':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-            Sem OS (Em Risco)
-          </span>
-        );
-      case 'cancelamento_abortado':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-purple-50 text-purple-700 border border-purple-200">
-            <RotateCcw className="w-3.5 h-3.5 text-purple-600" />
-            Desistiu / Retido
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
-            {status}
-          </span>
-        );
-    }
-  };
-
   const summary = data?.summary || {
     totalOrders: 0,
     totalDuplicados: 0,
     recuperados: 0,
+    tentando: 0,
+    perdidos: 0,
+    ativoCobranca: 0,
     pendentes: 0,
     emAndamento: 0,
     cancelamentoAbortado: 0,
@@ -372,7 +415,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
           <div className="text-xl sm:text-2xl font-extrabold text-slate-900">
             {loading ? '...' : summary.totalOrders}
           </div>
-          <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 truncate">Chamados + Churn s/ OS</p>
+          <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 truncate">Clientes da competência</p>
         </div>
 
         {/* Card 2: Recuperados */}
@@ -408,40 +451,40 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
           </p>
         </div>
 
-        {/* Card 4: Sem OS Aberta (Equipamento em Risco) */}
-        <div className="bg-amber-50/40 border border-amber-300/80 rounded-xl p-3.5 sm:p-4 shadow-xs">
+        {/* Card 4: Tentando Recuperação */}
+        <div className="bg-white border border-amber-200/80 rounded-xl p-3.5 sm:p-4 shadow-xs bg-amber-50/20">
           <div className="flex items-center justify-between text-amber-900 mb-1">
-            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Sem OS (Em Risco)</span>
-            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Tentando Recuperar</span>
+            <Clock className="w-4 h-4 text-amber-600 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-extrabold text-amber-700">
-            {loading ? '...' : summary.semOS}
+            {loading ? '...' : (summary.tentando || summary.pendentes)}
           </div>
-          <p className="text-[10px] sm:text-[11px] text-amber-700/80 mt-0.5 truncate">Cancelou s/ ordem busca</p>
+          <p className="text-[10px] sm:text-[11px] text-amber-700/80 mt-0.5 truncate">Em campo / Tentativa</p>
         </div>
 
-        {/* Card 5: Pendentes / Insucesso */}
+        {/* Card 5: Perdidos / Insucesso */}
         <div className="bg-white border border-rose-200/80 rounded-xl p-3.5 sm:p-4 shadow-xs bg-rose-50/20">
           <div className="flex items-center justify-between text-rose-800 mb-1">
-            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Não Recuperados</span>
+            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Perdidos</span>
             <PackageX className="w-4 h-4 text-rose-600 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-extrabold text-rose-700">
-            {loading ? '...' : summary.pendentes}
+            {loading ? '...' : summary.perdidos}
           </div>
-          <p className="text-[10px] sm:text-[11px] text-rose-600/80 mt-0.5 truncate">Ninguém no local / Insucesso</p>
+          <p className="text-[10px] sm:text-[11px] text-rose-600/80 mt-0.5 truncate">Mudou / Extraviado</p>
         </div>
 
-        {/* Card 6: Desistiu / Retido */}
+        {/* Card 6: Voltou Ativo (Cobrança) */}
         <div className="bg-white border border-purple-200/80 rounded-xl p-3.5 sm:p-4 shadow-xs bg-purple-50/20">
           <div className="flex items-center justify-between text-purple-800 mb-1">
-            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Desistiu / Retido</span>
+            <span className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider truncate">Voltou Ativo (Cobrança)</span>
             <RotateCcw className="w-4 h-4 text-purple-600 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-extrabold text-purple-700">
-            {loading ? '...' : summary.cancelamentoAbortado}
+            {loading ? '...' : (summary.ativoCobranca || summary.cancelamentoAbortado)}
           </div>
-          <p className="text-[10px] sm:text-[11px] text-purple-600/80 mt-0.5 truncate">Cancelamento abortado</p>
+          <p className="text-[10px] sm:text-[11px] text-purple-600/80 mt-0.5 truncate">Revertido cobrança / Reativou</p>
         </div>
       </div>
 
@@ -578,10 +621,10 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
             {[
               { id: 'todos', label: 'Todos', count: summary.totalOrders },
               { id: 'recuperado', label: 'Recuperados', count: summary.recuperados },
+              { id: 'tentando', label: 'Tentando Recuperação', count: summary.tentando || summary.pendentes },
+              { id: 'perdido', label: 'Perdidos', count: summary.perdidos },
+              { id: 'ativo_cobranca', label: 'Voltou Ativo (Cobrança)', count: summary.ativoCobranca || summary.cancelamentoAbortado },
               { id: 'sem_os', label: 'Sem OS (Em Risco)', count: summary.semOS },
-              { id: 'pendente', label: 'Não Recuperados', count: summary.pendentes },
-              { id: 'em_andamento', label: 'Em Aberto', count: summary.emAndamento },
-              { id: 'cancelamento_abortado', label: 'Desistiram', count: summary.cancelamentoAbortado },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -729,9 +772,44 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                           )}
                         </td>
 
-                        {/* Status */}
-                        <td className="py-3 px-3 text-center">
-                          {getStatusBadge(order.statusRecuperacao)}
+                        {/* Status Interativo */}
+                        <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <div className="relative inline-flex flex-col items-center">
+                            <div className="relative inline-flex items-center">
+                              <select
+                                value={order.statusManual || order.statusFinal || order.statusRecuperacao}
+                                onChange={(e) => handleStatusChange(order, e.target.value)}
+                                className={`appearance-none cursor-pointer pl-3 pr-6 py-1 rounded-full text-[11px] font-bold border transition shadow-2xs outline-none focus:ring-2 focus:ring-blue-500/20 text-center ${
+                                  (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'recuperado'
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                                    : (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'tentando' ||
+                                      (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'pendente' ||
+                                      (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'em_andamento'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                                    : (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'perdido'
+                                    ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100'
+                                    : (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'ativo_cobranca' ||
+                                      (order.statusFinal || order.statusManual || order.statusRecuperacao) === 'cancelamento_abortado'
+                                    ? 'bg-purple-50 text-purple-800 border-purple-300 hover:bg-purple-100'
+                                    : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                                }`}
+                                title="Clique para alterar a situação do equipamento"
+                              >
+                                <option value="recuperado">✓ Recuperado</option>
+                                <option value="tentando">⏳ Tentando Recuperação</option>
+                                <option value="perdido">✕ Perdido</option>
+                                <option value="ativo_cobranca">↺ Voltou Ativo (Cobrança)</option>
+                                {order.statusRecuperacao === 'sem_os' && <option value="sem_os">⚠️ Sem OS (Em Risco)</option>}
+                              </select>
+                              <ChevronDown className="w-3 h-3 absolute right-2 pointer-events-none opacity-60" />
+                            </div>
+                            {order.statusManual && (
+                              <span className="text-[9px] text-indigo-700 font-bold mt-0.5 flex items-center gap-0.5" title={`Auditado por ${order.atualizadoPor || 'Operador'}`}>
+                                <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+                                Auditado
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* Parecer Técnico */}
@@ -751,7 +829,123 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                       {/* Expanded Details Row */}
                       {isExpanded && (
                         <tr className="bg-slate-50/80 border-b border-slate-200">
-                          <td colSpan={7} className="p-4 px-6">
+                          <td colSpan={7} className="p-4 px-6 space-y-4">
+                            {/* Bloco de Auditoria & Classificação Manual da Equipe */}
+                            <div className="bg-white border-2 border-indigo-100 rounded-xl p-4 shadow-2xs space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                                <div className="flex items-center gap-2">
+                                  <div className="p-1.5 bg-indigo-50 text-indigo-700 rounded-lg shrink-0">
+                                    <Sparkles className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <h4 className="text-xs font-bold text-slate-900">Auditoria & Situação Real do Equipamento</h4>
+                                    <p className="text-[11px] text-slate-500">
+                                      Informe a situação real caso o cliente tenha reativado pela cobrança, mudado de endereço ou o aparelho tenha sido recolhido
+                                    </p>
+                                  </div>
+                                </div>
+                                {order.statusManual && (
+                                  <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full border border-indigo-200 self-start sm:self-auto flex items-center gap-1">
+                                    <Sparkles className="w-3 h-3" />
+                                    Auditado Manualmente
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Botões Rápidos */}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(order, 'recuperado')}
+                                  className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer select-none ${
+                                    (order.statusManual || order.statusFinal) === 'recuperado'
+                                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                                      : 'bg-emerald-50/50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+                                  }`}
+                                >
+                                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                                  <span>Recuperado</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(order, 'tentando')}
+                                  className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer select-none ${
+                                    (order.statusManual || order.statusFinal) === 'tentando'
+                                      ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                                      : 'bg-amber-50/50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                                  }`}
+                                >
+                                  <Clock className="w-4 h-4 shrink-0" />
+                                  <span>Tentando Recuperação</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(order, 'perdido')}
+                                  className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer select-none ${
+                                    (order.statusManual || order.statusFinal) === 'perdido'
+                                      ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                                      : 'bg-rose-50/50 hover:bg-rose-100 text-rose-800 border-rose-200'
+                                  }`}
+                                >
+                                  <PackageX className="w-4 h-4 shrink-0" />
+                                  <span>Perdido</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusChange(order, 'ativo_cobranca')}
+                                  className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer select-none ${
+                                    (order.statusManual || order.statusFinal) === 'ativo_cobranca'
+                                      ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                                      : 'bg-purple-50/50 hover:bg-purple-100 text-purple-800 border-purple-200'
+                                  }`}
+                                >
+                                  <RotateCcw className="w-4 h-4 shrink-0" />
+                                  <span>Voltou Ativo (Cobrança)</span>
+                                </button>
+                              </div>
+
+                              {/* Linha de Anotação Interna */}
+                              <div className="pt-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                                <input
+                                  type="text"
+                                  defaultValue={order.observacaoManual || ''}
+                                  id={`obs-${order.id}`}
+                                  placeholder="Observação da auditoria (ex: cliente solicitou boleto para reativar, casa vazia)..."
+                                  className="flex-1 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById(`obs-${order.id}`) as HTMLInputElement;
+                                    const note = input ? input.value : '';
+                                    handleStatusChange(order, order.statusManual || order.statusFinal || order.statusRecuperacao, note);
+                                  }}
+                                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shrink-0 cursor-pointer transition shadow-2xs"
+                                >
+                                  Salvar Nota
+                                </button>
+                                {order.statusManual && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStatusChange(order, '')}
+                                    className="text-[11px] text-slate-400 hover:text-slate-600 underline cursor-pointer shrink-0"
+                                    title="Restaurar para a detecção automática do chamado no RBX"
+                                  >
+                                    Restaurar automático
+                                  </button>
+                                )}
+                              </div>
+                              {order.atualizadoEm && (
+                                <div className="text-[10px] text-slate-400 italic">
+                                  Última alteração em {formatDate(order.atualizadoEm)} por {order.atualizadoPor || 'Operador'}
+                                  {order.observacaoManual ? ` • Nota: "${order.observacaoManual}"` : ''}
+                                </div>
+                              )}
+                            </div>
+
                             {order.statusRecuperacao === 'sem_os' ? (
                               <div className="space-y-3 bg-amber-50/90 border border-amber-300 rounded-lg p-4 shadow-2xs">
                                 <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
