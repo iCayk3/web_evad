@@ -164,10 +164,12 @@ export interface EquipamentoItem {
   statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'sem_os' | 'outro';
   equipamentoIdentificado: string;
   serialMac: string;
+  ehDuplicado: boolean;
 }
 
 export interface EquipamentoSummary {
   totalOrders: number;
+  totalDuplicados: number;
   recuperados: number;
   pendentes: number;
   emAndamento: number;

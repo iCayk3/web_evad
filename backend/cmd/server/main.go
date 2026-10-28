@@ -1325,10 +1325,12 @@ type EquipamentoItem struct {
 	StatusRecuperacao       string     `json:"statusRecuperacao"` // 'recuperado', 'pendente', 'em_andamento', 'cancelamento_abortado'
 	EquipamentoIdentificado string     `json:"equipamentoIdentificado"`
 	SerialMac               string     `json:"serialMac"`
+	EhDuplicado             bool       `json:"ehDuplicado"`
 }
 
 type EquipamentoSummary struct {
 	TotalOrders          int     `json:"totalOrders"`
+	TotalDuplicados      int     `json:"totalDuplicados"`
 	Recuperados          int     `json:"recuperados"`
 	Pendentes            int     `json:"pendentes"`
 	EmAndamento          int     `json:"emAndamento"`
@@ -1961,9 +1963,10 @@ func main() {
 		}
 
 		// Atendimentos do mês selecionado com enriquecimento cadastral
+		// + Detecção e flag de duplicatas de clientes (dup_rank)
 		// + Auditoria Cruzada de Clientes Churned sem OS aberta no RBX
 		equipQuery := `
-			WITH atends AS (
+			WITH raw_atends AS (
 				SELECT 
 					a.id, 
 					COALESCE(a.protocolo, '') as protocolo, 
@@ -1984,12 +1987,26 @@ func main() {
 					COALESCE(a.usuario_abertura, '') as usuario_abertura, 
 					a.status_recuperacao, 
 					COALESCE(a.equipamento_identificado, '') as equipamento_identificado, 
-					COALESCE(a.serial_mac, '') as serial_mac
+					COALESCE(a.serial_mac, '') as serial_mac,
+					ROW_NUMBER() OVER (
+						PARTITION BY a.id 
+						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END, 
+						         c.criado_em DESC
+					) as dup_rank
 				FROM atendimentos_equipamentos a
 				LEFT JOIN clientes c ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
 				WHERE a.mes_competencia = $1
 			),
-			churn_sem_os AS (
+			atends AS (
+				SELECT 
+					id, protocolo, codigo_cliente, nome_cliente, cidade, bairro, contrato, plano,
+					data_abertura, data_encerramento, mes_competencia, situacao_os, topico,
+					assunto, solucao, causa, usuario_abertura, status_recuperacao,
+					equipamento_identificado, serial_mac,
+					(dup_rank > 1) as eh_duplicado
+				FROM raw_atends
+			),
+			raw_churn_sem_os AS (
 				SELECT 
 					'SEM-OS-' || eb.codigo_rbx as id,
 					'S/N' as protocolo,
@@ -2010,7 +2027,12 @@ func main() {
 					'Auditoria Churn' as usuario_abertura,
 					'sem_os' as status_recuperacao,
 					'Equipamento em posse do cliente (Em Risco)' as equipamento_identificado,
-					'-' as serial_mac
+					'-' as serial_mac,
+					ROW_NUMBER() OVER (
+						PARTITION BY REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '')
+						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
+						         eb.data_bloqueio DESC
+					) as dup_rank
 				FROM eventos_bloqueio eb
 				JOIN clientes c ON c.codigo_rbx = eb.codigo_rbx
 				WHERE eb.mes_competencia = $1
@@ -2020,6 +2042,15 @@ func main() {
 					  SELECT 1 FROM atendimentos_equipamentos ae
 					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '')
 				  )
+			),
+			churn_sem_os AS (
+				SELECT 
+					id, protocolo, codigo_cliente, nome_cliente, cidade, bairro, contrato, plano,
+					data_abertura, data_encerramento, mes_competencia, situacao_os, topico,
+					assunto, solucao, causa, usuario_abertura, status_recuperacao,
+					equipamento_identificado, serial_mac,
+					(dup_rank > 1) as eh_duplicado
+				FROM raw_churn_sem_os
 			)
 			SELECT * FROM (
 				SELECT * FROM atends
@@ -2028,6 +2059,7 @@ func main() {
 			) u
 			ORDER BY 
 				CASE WHEN status_recuperacao = 'sem_os' THEN 1 ELSE 0 END,
+				eh_duplicado ASC,
 				data_encerramento DESC NULLS LAST, 
 				data_abertura DESC
 		`
@@ -2051,39 +2083,44 @@ func main() {
 				&item.DataAbertura, &item.DataEncerramento, &item.MesCompetencia,
 				&item.SituacaoOS, &item.Topico, &item.Assunto, &item.Solucao, &item.Causa,
 				&item.UsuarioAbertura, &item.StatusRecuperacao, &item.EquipamentoIdentificado, &item.SerialMac,
+				&item.EhDuplicado,
 			)
 			if err != nil {
 				continue
 			}
 
-			summary.TotalOrders++
-			switch item.StatusRecuperacao {
-			case "recuperado":
-				summary.Recuperados++
-			case "pendente":
-				summary.Pendentes++
-			case "em_andamento":
-				summary.EmAndamento++
-			case "cancelamento_abortado":
-				summary.CancelamentoAbortado++
-			case "sem_os":
-				summary.SemOS++
-			}
+			if item.EhDuplicado {
+				summary.TotalDuplicados++
+			} else {
+				summary.TotalOrders++
+				switch item.StatusRecuperacao {
+				case "recuperado":
+					summary.Recuperados++
+				case "pendente":
+					summary.Pendentes++
+				case "em_andamento":
+					summary.EmAndamento++
+				case "cancelamento_abortado":
+					summary.CancelamentoAbortado++
+				case "sem_os":
+					summary.SemOS++
+				}
 
-			cidade := item.Cidade
-			if cidade == "" {
-				cidade = "Não Informado"
-			}
-			if _, ok := cityMap[cidade]; !ok {
-				cityMap[cidade] = &EquipamentoCityStats{Cidade: cidade}
-			}
-			cityMap[cidade].Total++
-			if item.StatusRecuperacao == "recuperado" {
-				cityMap[cidade].Recuperados++
-			} else if item.StatusRecuperacao == "pendente" {
-				cityMap[cidade].Pendentes++
-			} else if item.StatusRecuperacao == "sem_os" {
-				cityMap[cidade].SemOS++
+				cidade := item.Cidade
+				if cidade == "" {
+					cidade = "Não Informado"
+				}
+				if _, ok := cityMap[cidade]; !ok {
+					cityMap[cidade] = &EquipamentoCityStats{Cidade: cidade}
+				}
+				cityMap[cidade].Total++
+				if item.StatusRecuperacao == "recuperado" {
+					cityMap[cidade].Recuperados++
+				} else if item.StatusRecuperacao == "pendente" {
+					cityMap[cidade].Pendentes++
+				} else if item.StatusRecuperacao == "sem_os" {
+					cityMap[cidade].SemOS++
+				}
 			}
 
 			orders = append(orders, item)

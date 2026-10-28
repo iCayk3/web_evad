@@ -17,9 +17,54 @@ import {
   Calendar,
   Layers,
   Building2,
+  Eye,
+  EyeOff,
+  GitBranch,
 } from 'lucide-react';
 import { API_BASE } from '../config/api';
 import type { EquipamentoResponse } from '../types';
+
+interface ParsedFlow {
+  topico: string;
+  causa: string;
+  abertura: string;
+  encerramento: string;
+  usuario: string;
+  setor: string;
+  detalhes: string;
+}
+
+const parseFlows = (assunto: string): ParsedFlow[] => {
+  if (!assunto || !assunto.includes('Fluxo finalizado')) return [];
+  const parts = assunto.split(/#\s*###\s*Fluxo finalizado:\s*#\s*###\//i);
+  const flows: ParsedFlow[] = [];
+
+  for (let i = 1; i < parts.length; i++) {
+    const text = parts[i];
+    const topicoMatch = text.match(/#\s*Tópico:\s*([^#/]+)#/i);
+    const causaMatch = text.match(/#\s*Causa:\s*([^#/]+)#/i);
+    const abertMatch = text.match(/#\s*Data\/Hora Abertura:\s*([^#/]+)#/i);
+    const encMatch = text.match(/#\s*Data\/Hora Encerramento:\s*([^#/]+)#/i);
+    const userMatch = text.match(/#\s*Usuário:\s*([^#/]+)#/i);
+    const setorMatch = text.match(/#\s*Setor\/Grupo:\s*([^#/]+)#/i);
+
+    const detalhes = text
+      .replace(/#\s*[^#]+#\//g, '')
+      .replace(/#\s*[^#]+#/g, '')
+      .trim();
+
+    flows.push({
+      topico: topicoMatch ? topicoMatch[1].trim() : 'Fluxo Concluído',
+      causa: causaMatch ? causaMatch[1].trim() : '',
+      abertura: abertMatch ? abertMatch[1].trim() : '',
+      encerramento: encMatch ? encMatch[1].trim() : '',
+      usuario: userMatch ? userMatch[1].trim() : '',
+      setor: setorMatch ? setorMatch[1].trim() : '',
+      detalhes,
+    });
+  }
+  return flows;
+};
 
 export const EquipmentRecoveryDashboard: React.FC = () => {
   const [data, setData] = useState<EquipamentoResponse | null>(null);
@@ -28,6 +73,7 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
   const [selectedMonth, setSelectedMonth] = useState('2026-01');
   const [statusFilter, setStatusFilter] = useState<string>('todos');
   const [cityFilter, setCityFilter] = useState<string>('todas');
+  const [showDuplicates, setShowDuplicates] = useState(false); // Preferivelmente manter oculto por padrão
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<{ text: string; isError: boolean } | null>(null);
@@ -83,6 +129,10 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
   const filteredOrders = useMemo(() => {
     if (!data?.orders) return [];
     return data.orders.filter((order) => {
+      // Filtro de duplicados (preferivelmente manter oculto por padrão)
+      if (!showDuplicates && order.ehDuplicado) {
+        return false;
+      }
       // Status Filter
       if (statusFilter !== 'todos' && order.statusRecuperacao !== statusFilter) {
         return false;
@@ -119,7 +169,7 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
       }
       return true;
     });
-  }, [data?.orders, statusFilter, cityFilter, searchTerm]);
+  }, [data?.orders, showDuplicates, statusFilter, cityFilter, searchTerm]);
 
   const toggleExpand = (id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -183,6 +233,7 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
 
   const summary = data?.summary || {
     totalOrders: 0,
+    totalDuplicados: 0,
     recuperados: 0,
     pendentes: 0,
     emAndamento: 0,
@@ -427,6 +478,31 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
               </select>
             </div>
           )}
+
+          {/* Toggle para exibir ou manter oculto os cadastros duplicados (por padrão oculto) */}
+          {summary.totalDuplicados > 0 && (
+            <button
+              onClick={() => setShowDuplicates((prev) => !prev)}
+              className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer select-none shrink-0 ${
+                showDuplicates
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 shadow-2xs'
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+              }`}
+              title={showDuplicates ? 'Clique para ocultar duplicados' : 'Clique para exibir cadastros duplicados'}
+            >
+              {showDuplicates ? (
+                <>
+                  <Eye className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Exibindo Duplicados ({summary.totalDuplicados})</span>
+                </>
+              ) : (
+                <>
+                  <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Ocultando Duplicados ({summary.totalDuplicados})</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Filter Pills */}
@@ -522,8 +598,14 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
 
                         {/* Cliente */}
                         <td className="py-3 px-3 font-medium text-slate-900">
-                          <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                          <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
                             <span>{order.nomeCliente}</span>
+                            {order.ehDuplicado && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center gap-0.5">
+                                <AlertCircle className="w-3 h-3 text-amber-600" />
+                                Duplicata RBX
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-slate-500 font-mono">
                             Cód: {order.codigoCliente} {order.contrato ? `• Contrato: ${order.contrato}` : ''}
@@ -620,36 +702,88 @@ export const EquipmentRecoveryDashboard: React.FC = () => {
                                 </div>
                               </div>
                             ) : (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                                {/* Left Column: Solution & Cause */}
-                                <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
-                                  <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
-                                    <FileText className="w-3.5 h-3.5 text-blue-600" />
-                                    <span>Parecer do Técnico na Baixa (Solução)</span>
+                              <div className="space-y-3">
+                                {order.ehDuplicado && (
+                                  <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                                    <span>
+                                      <strong>Cadastro Duplo Identificado no RBX:</strong> Este cliente possui variações de formatação de código no sistema (com e sem pontuação). Por padrão, o sistema mantém as duplicatas <strong>ocultas</strong> para não duplicar OSs nem distorcer as taxas operacionais.
+                                    </span>
                                   </div>
-                                  <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 font-mono text-[11px] leading-relaxed">
-                                    {order.solucao || 'Nenhum texto de solução cadastrado no chamado.'}
+                                )}
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                                  {/* Left Column: Solution & Cause */}
+                                  <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
+                                    <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
+                                      <FileText className="w-3.5 h-3.5 text-blue-600" />
+                                      <span>Parecer do Técnico na Baixa (Solução)</span>
+                                    </div>
+                                    <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 font-mono text-[11px] leading-relaxed">
+                                      {order.solucao || 'Nenhum texto de solução cadastrado no chamado.'}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                                      <span>Causa registrada: <strong>{order.causa || 'Não informada'}</strong></span>
+                                      <span>Tópico: <strong>{order.topico}</strong></span>
+                                    </div>
                                   </div>
-                                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
-                                    <span>Causa registrada: <strong>{order.causa || 'Não informada'}</strong></span>
-                                    <span>Tópico: <strong>{order.topico}</strong></span>
+
+                                  {/* Right Column: Assunto / Comodato Equipments */}
+                                  <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
+                                    <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
+                                      <HardDrive className="w-3.5 h-3.5 text-indigo-600" />
+                                      <span>Histórico & Equipamentos em Comodato (Assunto)</span>
+                                    </div>
+                                    <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 text-[11px] leading-relaxed max-h-48 overflow-y-auto font-mono">
+                                      {order.assunto || 'Sem detalhes no assunto.'}
+                                    </div>
+                                    <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                                      <span>Abertura por: <strong>{order.usuarioAbertura || 'Sistema'}</strong></span>
+                                      <span>Protocolo: <strong className="font-mono">{order.protocolo}</strong></span>
+                                    </div>
                                   </div>
                                 </div>
 
-                                {/* Right Column: Assunto / Comodato Equipments */}
-                                <div className="space-y-2 bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
-                                  <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5">
-                                    <HardDrive className="w-3.5 h-3.5 text-indigo-600" />
-                                    <span>Histórico & Equipamentos em Comodato (Assunto)</span>
-                                  </div>
-                                  <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 text-[11px] leading-relaxed max-h-48 overflow-y-auto font-mono">
-                                    {order.assunto || 'Sem detalhes no assunto.'}
-                                  </div>
-                                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
-                                    <span>Abertura por: <strong>{order.usuarioAbertura || 'Sistema'}</strong></span>
-                                    <span>Protocolo: <strong className="font-mono">{order.protocolo}</strong></span>
-                                  </div>
-                                </div>
+                                {/* Flows Timeline (if ticket has multiple flows in RBX) */}
+                                {(() => {
+                                  const flows = parseFlows(order.assunto);
+                                  if (flows.length === 0) return null;
+                                  return (
+                                    <div className="bg-white p-3.5 rounded-lg border border-slate-200 shadow-2xs">
+                                      <div className="flex items-center gap-1.5 text-slate-800 font-bold border-b border-slate-100 pb-1.5 mb-2.5">
+                                        <GitBranch className="w-3.5 h-3.5 text-indigo-600" />
+                                        <span>Histórico de Fluxos e Tramitações no RBX ({flows.length} etapas registradas)</span>
+                                      </div>
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {flows.map((flow, idx) => (
+                                          <div key={idx} className="bg-slate-50 border border-slate-200/80 rounded-lg p-2.5 text-xs space-y-1">
+                                            <div className="flex items-center justify-between font-semibold text-slate-900 pb-1 border-b border-slate-200/60">
+                                              <span className="flex items-center gap-1.5">
+                                                <span className="w-4 h-4 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px] font-bold">
+                                                  {idx + 1}
+                                                </span>
+                                                {flow.topico}
+                                              </span>
+                                              <span className="text-[10px] text-slate-500 font-normal">
+                                                {flow.abertura} {flow.encerramento ? `➔ ${flow.encerramento}` : ''}
+                                              </span>
+                                            </div>
+                                            {flow.causa && (
+                                              <div className="text-[11px] text-slate-700">
+                                                Desfecho: <strong>{flow.causa}</strong> {flow.usuario ? `• Operador: ${flow.usuario}` : ''}
+                                              </div>
+                                            )}
+                                            {flow.detalhes && (
+                                              <div className="text-[10px] text-slate-600 font-mono bg-white p-1.5 rounded border border-slate-200/60 leading-relaxed">
+                                                {flow.detalhes}
+                                              </div>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             )}
                           </td>
