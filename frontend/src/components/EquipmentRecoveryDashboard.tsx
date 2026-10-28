@@ -27,6 +27,7 @@ import {
   BarChart3,
   TrendingUp,
   DollarSign,
+  Settings,
 } from 'lucide-react';
 import { API_BASE } from '../config/api';
 import type { EquipamentoResponse, EquipamentoItem } from '../types';
@@ -131,6 +132,30 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [syncMessage, setSyncMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // Valor unitário de referência do hardware (ONU / Roteador comodatado) com persistência local
+  const [hardwareUnitPrice, setHardwareUnitPrice] = useState<number>(() => {
+    const saved = localStorage.getItem('evad_hardware_unit_price');
+    if (saved) {
+      const parsed = parseFloat(saved);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return 220; // Padrão R$ 220,00 por aparelho comodatado
+  });
+  const [isPriceModalOpen, setIsPriceModalOpen] = useState(false);
+  const [tempPriceInput, setTempPriceInput] = useState<string>(() => hardwareUnitPrice.toString());
+
+  const handleSavePrice = (newVal: number) => {
+    if (isNaN(newVal) || newVal <= 0) return;
+    setHardwareUnitPrice(newVal);
+    localStorage.setItem('evad_hardware_unit_price', newVal.toString());
+    setIsPriceModalOpen(false);
+    setSyncMessage({
+      text: `Valor unitário do equipamento atualizado para R$ ${newVal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}! Indicadores e relatórios recalculados.`,
+      isError: false,
+    });
+    setTimeout(() => setSyncMessage(null), 4000);
+  };
 
   const fetchData = useCallback(async (month: string) => {
     setLoading(true);
@@ -411,13 +436,12 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
-  const HARDWARE_UNIT_PRICE = 220;
   const financialStats = useMemo(() => {
-    const totalRisk = (summary.totalOrders || 0) * HARDWARE_UNIT_PRICE;
-    const recovered = (summary.recuperados || 0) * HARDWARE_UNIT_PRICE;
-    const withoutOS = (summary.semOS || 0) * HARDWARE_UNIT_PRICE;
-    const lost = (summary.perdidos || 0) * HARDWARE_UNIT_PRICE;
-    const active = (summary.ativoCobranca || 0) * HARDWARE_UNIT_PRICE;
+    const totalRisk = (summary.totalOrders || 0) * hardwareUnitPrice;
+    const recovered = (summary.recuperados || 0) * hardwareUnitPrice;
+    const withoutOS = (summary.semOS || 0) * hardwareUnitPrice;
+    const lost = (summary.perdidos || 0) * hardwareUnitPrice;
+    const active = (summary.ativoCobranca || 0) * hardwareUnitPrice;
     const osEffectiveness =
       (summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0)) > 0
         ? ((summary.recuperados / (summary.recuperados + (summary.tentando || 0) + (summary.perdidos || 0))) * 100)
@@ -431,7 +455,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       active,
       osEffectiveness: Math.round(osEffectiveness * 10) / 10,
     };
-  }, [summary]);
+  }, [summary, hardwareUnitPrice]);
 
   return (
     <div>
@@ -442,6 +466,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
             orders={data.orders}
             summary={summary}
             selectedMonth={selectedMonth}
+            hardwareUnitValue={hardwareUnitPrice}
           />
         )}
       </div>
@@ -449,27 +474,27 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       {/* 2. Conteúdo em Tela (Ocultado no Print) */}
       <div className="space-y-6 print:hidden animate-fade-in">
         {/* Top Banner / Controls */}
-        <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
+        <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
             <div className="flex items-start sm:items-center gap-3">
               <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
                 <PackageCheck className="w-5 h-5" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
                   <span>Recuperação de Equipamentos</span>
                   <span className="text-[10px] sm:text-[11px] font-semibold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
                     Gestão de Hardware
                   </span>
                 </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
+                <p className="text-xs text-slate-500 mt-0.5 break-words">
                   Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-2.5 w-full lg:w-auto">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full 2xl:w-auto 2xl:justify-end">
             {/* Seletor de Mês */}
             <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium shrink-0">
               <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -491,6 +516,25 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               </select>
             </div>
 
+            {/* Botão/Pill Valor Unitário do Equipamento */}
+            <button
+              onClick={() => {
+                setTempPriceInput(hardwareUnitPrice.toString());
+                setIsPriceModalOpen(true);
+              }}
+              className="flex items-center space-x-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium transition cursor-pointer shrink-0 shadow-2xs group"
+              title="Clique para definir o valor unitário estimado de cada equipamento"
+            >
+              <DollarSign className="w-3.5 h-3.5 text-emerald-600 group-hover:scale-110 transition-transform shrink-0" />
+              <span className="hidden sm:inline text-slate-500">Valor Unit:</span>
+              <span className="font-bold text-slate-900">
+                {formatCurrency(hardwareUnitPrice)}
+              </span>
+              <span className="text-[10px] bg-slate-200/80 group-hover:bg-slate-300 text-slate-700 px-1 py-0.2 rounded font-semibold ml-0.5">
+                Definir
+              </span>
+            </button>
+
             {/* Botão Sincronizar RBX */}
             <button
               onClick={handleSync}
@@ -508,7 +552,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer shrink-0"
               title="Visualizar a folha A4 executiva do relatório de equipamentos"
             >
-              <FileText className="w-3.5 h-3.5 text-blue-600" />
+              <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
               <span className="hidden sm:inline">Prévia Executiva</span>
               <span className="sm:hidden">Prévia</span>
             </button>
@@ -519,7 +563,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold shadow-xs transition cursor-pointer shrink-0"
               title="Imprimir ou Salvar em PDF o Relatório Executivo A4 de Equipamentos"
             >
-              <Printer className="w-3.5 h-3.5" />
+              <Printer className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">Imprimir Relatório (PDF)</span>
               <span className="sm:hidden">PDF</span>
             </button>
@@ -734,6 +778,60 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
         /* MODO DASHBOARD EXECUTIVO & KPIS                                          */
         /* ========================================================================= */
         <div className="space-y-5 animate-fade-in">
+          {/* Barra de Parâmetro e Definição do Custo do Equipamento */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-3.5 sm:p-4 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-2.5">
+              <div className="p-2 bg-emerald-50 text-emerald-700 rounded-lg shrink-0">
+                <DollarSign className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight">
+                    Parâmetro de Cálculo do Patrimônio em Comodato
+                  </h4>
+                  <span className="text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    Personalizável
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Valor base por aparelho (ONU / Roteador Wi-Fi) utilizado para mensurar o patrimônio sob risco, salvo ou extraviado.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <span className="text-xs font-semibold text-slate-600">Custo / Unidade:</span>
+              <div className="flex items-center bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 focus-within:bg-white transition">
+                <span className="text-xs font-bold text-slate-500 mr-1">R$</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="5"
+                  value={hardwareUnitPrice}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    if (!isNaN(val) && val > 0) {
+                      setHardwareUnitPrice(val);
+                      localStorage.setItem('evad_hardware_unit_price', val.toString());
+                    }
+                  }}
+                  className="w-20 text-xs font-extrabold text-slate-900 bg-transparent border-none outline-none"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  setTempPriceInput(hardwareUnitPrice.toString());
+                  setIsPriceModalOpen(true);
+                }}
+                className="text-xs px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5"
+                title="Configurar valor ou escolher modelos padrão de mercado"
+              >
+                <Settings className="w-3.5 h-3.5 text-slate-500" />
+                <span>Modelos Sugeridos</span>
+              </button>
+            </div>
+          </div>
+
           {/* 1. Painel Financeiro de Patrimônio */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
             <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 rounded-xl shadow-xs border border-slate-700">
@@ -745,7 +843,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                 {formatCurrency(financialStats.totalRisk)}
               </div>
               <p className="text-[11px] text-slate-300 mt-1">
-                {summary.totalOrders} aparelhos comodatados sob risco
+                {summary.totalOrders} aparelhos × {formatCurrency(hardwareUnitPrice)} sob risco
               </p>
             </div>
 
@@ -998,7 +1096,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-slate-600">
-                    <span>Total em risco: <strong>{c.total}</strong></span>
+                    <span>Em risco: <strong>{c.total}</strong> <span className="text-[10px] text-slate-400">({formatCurrency(c.total * hardwareUnitPrice)})</span></span>
                     <span className="text-emerald-700 font-semibold">{c.recuperados} recolhidos</span>
                     {c.semOS > 0 && (
                       <span className="text-amber-700 font-bold">{c.semOS} sem OS</span>
@@ -1677,8 +1775,129 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               orders={data?.orders || []}
               summary={summary}
               selectedMonth={selectedMonth}
+              hardwareUnitValue={hardwareUnitPrice}
             />
           </div>
+        </div>
+      </div>
+    </div>
+  )}
+
+  {/* Modal de Definição do Custo do Equipamento */}
+  {isPriceModalOpen && (
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 no-print animate-fade-in">
+      <div className="bg-white rounded-xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden">
+        {/* Modal Header */}
+        <div className="bg-slate-900 px-5 py-4 text-white flex items-center justify-between">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400">
+              <DollarSign className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-sm text-white">
+                Definir Valor do Equipamento
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Cálculo da exposição patrimonial em comodato
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsPriceModalOpen(false)}
+            className="p-1 text-slate-400 hover:text-white rounded transition cursor-pointer"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-5 space-y-4">
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Informe o valor médio de reposição por aparelho comodatado (ONU / Roteador Wi-Fi). Todos os indicadores de <strong>Patrimônio em Risco</strong>, <strong>Patrimônio Salvo</strong> e o <strong>Relatório Executivo de Impressão</strong> serão recalculados instantaneamente com este valor.
+          </p>
+
+          {/* Input Customizado */}
+          <div>
+            <label className="block text-xs font-bold text-slate-800 mb-1.5">
+              Valor Unitário Estimado (R$)
+            </label>
+            <div className="flex items-center bg-slate-50 border-2 border-slate-300 focus-within:border-blue-600 focus-within:bg-white rounded-lg px-3 py-2 transition shadow-inner">
+              <span className="text-sm font-bold text-slate-500 mr-2">R$</span>
+              <input
+                type="number"
+                min="1"
+                step="5"
+                value={tempPriceInput}
+                onChange={(e) => setTempPriceInput(e.target.value)}
+                placeholder="Ex: 220,00"
+                className="w-full text-base font-extrabold text-slate-900 bg-transparent outline-none border-none"
+                autoFocus
+              />
+            </div>
+          </div>
+
+          {/* Sugestões Rápidas de Modelos de Mercado */}
+          <div>
+            <span className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+              Modelos e Valores Típicos de Provedores:
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'ONU Básica / Bridge', value: 150 },
+                { label: 'ONU Wi-Fi AC Dual Band (Padrão)', value: 220 },
+                { label: 'ONU Wi-Fi 6 AX Gigabit', value: 280 },
+                { label: 'Roteador Mesh Especial', value: 350 },
+              ].map((preset) => (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => setTempPriceInput(preset.value.toString())}
+                  className={`text-left p-2.5 rounded-lg border text-xs transition cursor-pointer ${
+                    parseFloat(tempPriceInput) === preset.value
+                      ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold ring-1 ring-blue-500'
+                      : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <div className="font-bold text-slate-900">R$ {preset.value},00</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">{preset.label}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Totalizador de Simulação em Tempo Real */}
+          {(() => {
+            const simPrice = parseFloat(tempPriceInput) || 0;
+            const totalSim = (summary.totalOrders || 0) * simPrice;
+            return (
+              <div className="bg-slate-100/80 rounded-lg p-3 border border-slate-200 flex justify-between items-center text-xs">
+                <span className="text-slate-600 font-medium">
+                  Simulação ({summary.totalOrders} aparelhos):
+                </span>
+                <strong className="text-slate-900 font-extrabold text-sm">
+                  {formatCurrency(totalSim)}
+                </strong>
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Modal Footer */}
+        <div className="bg-slate-50 px-5 py-3 border-t border-slate-200 flex items-center justify-end space-x-2">
+          <button
+            type="button"
+            onClick={() => setIsPriceModalOpen(false)}
+            className="px-3.5 py-1.5 border border-slate-300 hover:bg-white text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSavePrice(parseFloat(tempPriceInput) || 220)}
+            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-xs cursor-pointer"
+          >
+            Salvar e Recalcular Indicadores
+          </button>
         </div>
       </div>
     </div>

@@ -5,6 +5,7 @@ interface EquipmentPrintReportProps {
   orders: EquipamentoItem[];
   summary: EquipamentoSummary;
   selectedMonth: string;
+  hardwareUnitValue?: number;
 }
 
 // Normalização ortográfica das praças do provedor
@@ -26,6 +27,7 @@ const formatCityName = (cityName: string): string => {
 export const EquipmentPrintReport: React.FC<EquipmentPrintReportProps> = ({
   orders,
   selectedMonth,
+  hardwareUnitValue,
 }) => {
   const formatCurrency = (val: number) => {
     return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -45,7 +47,7 @@ export const EquipmentPrintReport: React.FC<EquipmentPrintReportProps> = ({
   const monthName = monthNames[monthNum - 1] || 'Janeiro';
 
   // Custo médio estimado de reposição de hardware comodatado (ONT GPON / Roteador Dual Band)
-  const HARDWARE_UNIT_VALUE = 220.0;
+  const HARDWARE_UNIT_VALUE = hardwareUnitValue && hardwareUnitValue > 0 ? hardwareUnitValue : 220.0;
 
   // Filtragem estrita dos contratos NÃO RETORNADOS (os que estão sob risco patrimonial)
   const nonReturnedOrders = useMemo(() => {
@@ -178,6 +180,9 @@ export const EquipmentPrintReport: React.FC<EquipmentPrintReportProps> = ({
           </div>
           <div className="text-[9.5px] font-semibold text-slate-600">
             Provedor: Sol Telecom • Gestão de Ativos & Hardware
+          </div>
+          <div className="text-[9px] text-slate-500 font-mono mt-0.5">
+            Ref. Custo Unitário: <strong>{formatCurrency(HARDWARE_UNIT_VALUE)}/aparelho</strong>
           </div>
         </div>
       </div>
