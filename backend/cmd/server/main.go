@@ -1500,6 +1500,53 @@ type EquipamentoResponse struct {
 	SelectedMonth   string                 `json:"selectedMonth"`
 }
 
+type EquipamentoAnnualMonthStats struct {
+	MonthKey        string  `json:"monthKey"`
+	MonthLabel      string  `json:"monthLabel"`
+	Total           int     `json:"total"`
+	Recuperados     int     `json:"recuperados"`
+	Tentando        int     `json:"tentando"`
+	SemOS           int     `json:"semOS"`
+	Perdidos        int     `json:"perdidos"`
+	AtivoCobranca   int     `json:"ativoCobranca"`
+	TaxaRecuperacao float64 `json:"taxaRecuperacao"`
+}
+
+type EquipamentoAnnualCityStats struct {
+	Cidade          string  `json:"cidade"`
+	Total           int     `json:"total"`
+	Recuperados     int     `json:"recuperados"`
+	Tentando        int     `json:"tentando"`
+	SemOS           int     `json:"semOS"`
+	Perdidos        int     `json:"perdidos"`
+	TaxaRecuperacao float64 `json:"taxaRecuperacao"`
+}
+
+type EquipamentoAnnualCauseStats struct {
+	Motivo string `json:"motivo"`
+	Total  int    `json:"total"`
+}
+
+type EquipamentoAnnualSummary struct {
+	TotalOrders       int     `json:"totalOrders"`
+	Recuperados       int     `json:"recuperados"`
+	Tentando          int     `json:"tentando"`
+	SemOS             int     `json:"semOS"`
+	Perdidos          int     `json:"perdidos"`
+	AtivoCobranca     int     `json:"ativoCobranca"`
+	TaxaRecuperacao   float64 `json:"taxaRecuperacao"`
+	TaxaEfetividadeOS float64 `json:"taxaEfetividadeOS"`
+}
+
+type EquipamentoAnnualResponse struct {
+	Year           string                        `json:"year"`
+	Summary        EquipamentoAnnualSummary      `json:"summary"`
+	ByMonth        []EquipamentoAnnualMonthStats `json:"byMonth"`
+	ByCity         []EquipamentoAnnualCityStats  `json:"byCity"`
+	ByCause        []EquipamentoAnnualCauseStats `json:"byCause"`
+	AvailableYears []string                      `json:"availableYears"`
+}
+
 var reComodato = regexp.MustCompile(`(?i)Equip:\s*([^/\r\n#]+)`)
 var reSolEquip = regexp.MustCompile(`(?i)RETIRADA DE UMA?\s*([^,\r\n]+)`)
 var reSerialMac = regexp.MustCompile(`(?i)(?:Ser|MAC|Serial):\s*([a-zA-Z0-9.:_-]+)`)
@@ -2405,6 +2452,287 @@ func main() {
 			ByCity:          byCity,
 			AvailableMonths: availMonths,
 			SelectedMonth:   month,
+		})
+	})
+
+	r.Get("/api/equipamentos/annual", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		year := strings.TrimSpace(r.URL.Query().Get("year"))
+		if year == "" {
+			year = "2026"
+		}
+
+		// Anos disponíveis na base
+		var availYears []string
+		yRows, err := dbPool.Query(ctx, `
+			SELECT DISTINCT SUBSTRING(mes_competencia FROM 1 FOR 4) as ano
+			FROM eventos_bloqueio
+			WHERE mes_competencia IS NOT NULL AND mes_competencia != ''
+			ORDER BY ano DESC
+		`)
+		if err == nil {
+			defer yRows.Close()
+			for yRows.Next() {
+				var y string
+				if err := yRows.Scan(&y); err == nil && y != "" {
+					availYears = append(availYears, y)
+				}
+			}
+		}
+		if len(availYears) == 0 {
+			availYears = []string{year}
+		}
+
+		filterYear := year + "-%"
+
+		annualQuery := `
+			WITH excel_clients AS (
+				SELECT DISTINCT 
+					eb.codigo_rbx,
+					REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') as codigo_clean,
+					eb.mes_competencia,
+					eb.contrato,
+					eb.plano,
+					eb.bairro,
+					eb.data_bloqueio,
+					eb.status_desfecho,
+					eb.motivo_cancelamento
+				FROM eventos_bloqueio eb
+				WHERE eb.mes_competencia LIKE $1
+				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+			),
+			raw_atends AS (
+				SELECT 
+					a.id, 
+					ec.mes_competencia,
+					a.status_recuperacao,
+					ec.status_desfecho,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
+						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						  OR (
+						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
+						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
+						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
+						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'canto do sabia', 'canto do sabiá', 'boa vista'
+						      )
+						  )
+						THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade,
+					ROW_NUMBER() OVER (
+						PARTITION BY a.id, ec.codigo_clean, ec.mes_competencia
+						ORDER BY c.criado_em DESC
+					) as dup_rank
+				FROM atendimentos_equipamentos a
+				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				WHERE (a.mes_competencia = ec.mes_competencia OR (a.data_abertura >= ec.data_bloqueio - interval '15 days' AND a.data_abertura <= ec.data_bloqueio + interval '120 days'))
+			),
+			atends AS (
+				SELECT id, mes_competencia, status_recuperacao, status_desfecho, cidade
+				FROM raw_atends
+				WHERE dup_rank = 1
+			),
+			raw_sem_os AS (
+				SELECT DISTINCT ON (ec.codigo_clean, ec.mes_competencia)
+					'SEM-OS-' || ec.codigo_rbx || '-' || ec.mes_competencia as id,
+					ec.mes_competencia,
+					'sem_os' as status_recuperacao,
+					ec.status_desfecho,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
+						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						  OR (
+						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
+						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
+						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
+						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'canto do sabia', 'canto do sabiá', 'boa vista'
+						      )
+						  )
+						THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade
+				FROM excel_clients ec
+				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				WHERE ec.status_desfecho IN ('churned', 'suspended')
+				  AND NOT EXISTS (
+					  SELECT 1 FROM atendimentos_equipamentos ae
+					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
+					    AND (ae.mes_competencia = ec.mes_competencia OR (ae.data_abertura >= ec.data_bloqueio - interval '15 days' AND ae.data_abertura <= ec.data_bloqueio + interval '120 days'))
+				  )
+			),
+			all_items AS (
+				SELECT 
+					u.id, u.mes_competencia, u.cidade, u.status_desfecho,
+					CASE 
+						WHEN aem.status_manual IS NOT NULL AND aem.status_manual != '' THEN aem.status_manual
+						WHEN u.status_recuperacao = 'cancelamento_abortado' THEN 'ativo_cobranca'
+						WHEN u.status_recuperacao IN ('em_andamento', 'pendente') THEN 'tentando'
+						ELSE u.status_recuperacao
+					END as status_final
+				FROM (
+					SELECT * FROM atends
+					UNION ALL
+					SELECT * FROM raw_sem_os
+				) u
+				LEFT JOIN auditoria_equipamentos_manual aem ON aem.registro_id = u.id
+			)
+			SELECT mes_competencia, cidade, status_desfecho, status_final
+			FROM all_items
+		`
+
+		rows, err := dbPool.Query(ctx, annualQuery, filterYear)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar anual de equipamentos: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var summary EquipamentoAnnualSummary
+		monthMap := make(map[string]*EquipamentoAnnualMonthStats)
+		cityMap := make(map[string]*EquipamentoAnnualCityStats)
+
+		for rows.Next() {
+			var mesComp, cidade, statusDesfecho, statusFinal string
+			if err := rows.Scan(&mesComp, &cidade, &statusDesfecho, &statusFinal); err != nil {
+				continue
+			}
+
+			summary.TotalOrders++
+			switch statusFinal {
+			case "recuperado":
+				summary.Recuperados++
+			case "tentando":
+				summary.Tentando++
+			case "sem_os":
+				summary.SemOS++
+			case "perdido":
+				summary.Perdidos++
+			case "ativo_cobranca":
+				summary.AtivoCobranca++
+			}
+
+			if _, ok := monthMap[mesComp]; !ok {
+				monthMap[mesComp] = &EquipamentoAnnualMonthStats{
+					MonthKey:   mesComp,
+					MonthLabel: getMonthLabel(mesComp),
+				}
+			}
+			mStat := monthMap[mesComp]
+			mStat.Total++
+			switch statusFinal {
+			case "recuperado":
+				mStat.Recuperados++
+			case "tentando":
+				mStat.Tentando++
+			case "sem_os":
+				mStat.SemOS++
+			case "perdido":
+				mStat.Perdidos++
+			case "ativo_cobranca":
+				mStat.AtivoCobranca++
+			}
+
+			if cidade == "" {
+				cidade = "Não Informado"
+			}
+			if _, ok := cityMap[cidade]; !ok {
+				cityMap[cidade] = &EquipamentoAnnualCityStats{
+					Cidade: cidade,
+				}
+			}
+			cStat := cityMap[cidade]
+			cStat.Total++
+			switch statusFinal {
+			case "recuperado":
+				cStat.Recuperados++
+			case "tentando":
+				cStat.Tentando++
+			case "sem_os":
+				cStat.SemOS++
+			case "perdido":
+				cStat.Perdidos++
+			}
+		}
+
+		if summary.TotalOrders > 0 {
+			summary.TaxaRecuperacao = math.Round((float64(summary.Recuperados)/float64(summary.TotalOrders))*1000) / 10
+		}
+		if (summary.Recuperados + summary.Tentando + summary.Perdidos) > 0 {
+			summary.TaxaEfetividadeOS = math.Round((float64(summary.Recuperados)/float64(summary.Recuperados+summary.Tentando+summary.Perdidos))*1000) / 10
+		}
+
+		var byMonth []EquipamentoAnnualMonthStats
+		for _, m := range monthMap {
+			if m.Total > 0 {
+				m.TaxaRecuperacao = math.Round((float64(m.Recuperados)/float64(m.Total))*1000) / 10
+			}
+			byMonth = append(byMonth, *m)
+		}
+		sort.Slice(byMonth, func(i, j int) bool {
+			return byMonth[i].MonthKey < byMonth[j].MonthKey
+		})
+
+		var byCity []EquipamentoAnnualCityStats
+		for _, c := range cityMap {
+			if c.Total > 0 {
+				c.TaxaRecuperacao = math.Round((float64(c.Recuperados)/float64(c.Total))*1000) / 10
+			}
+			byCity = append(byCity, *c)
+		}
+		sort.Slice(byCity, func(i, j int) bool {
+			return byCity[i].Total > byCity[j].Total
+		})
+
+		var byCause []EquipamentoAnnualCauseStats
+		cRows, err := dbPool.Query(ctx, `
+			SELECT 
+				COALESCE(NULLIF(solucao, ''), NULLIF(causa, ''), NULLIF(topico, ''), 'Sem Detalhe') as motivo,
+				COUNT(*) as total
+			FROM atendimentos_equipamentos
+			WHERE mes_competencia LIKE $1
+			GROUP BY 1
+			ORDER BY total DESC
+			LIMIT 8
+		`, filterYear)
+		if err == nil {
+			defer cRows.Close()
+			for cRows.Next() {
+				var cs EquipamentoAnnualCauseStats
+				if err := cRows.Scan(&cs.Motivo, &cs.Total); err == nil && cs.Motivo != "" {
+					byCause = append(byCause, cs)
+				}
+			}
+		}
+
+		if byMonth == nil {
+			byMonth = []EquipamentoAnnualMonthStats{}
+		}
+		if byCity == nil {
+			byCity = []EquipamentoAnnualCityStats{}
+		}
+		if byCause == nil {
+			byCause = []EquipamentoAnnualCauseStats{}
+		}
+
+		json.NewEncoder(w).Encode(EquipamentoAnnualResponse{
+			Year:           year,
+			Summary:        summary,
+			ByMonth:        byMonth,
+			ByCity:         byCity,
+			ByCause:        byCause,
+			AvailableYears: availYears,
 		})
 	})
 

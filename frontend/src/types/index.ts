@@ -206,3 +206,50 @@ export interface EquipamentoResponse {
   availableMonths: string[];
   selectedMonth: string;
 }
+
+export interface EquipamentoAnnualMonthStats {
+  monthKey: string;
+  monthLabel: string;
+  total: number;
+  recuperados: number;
+  tentando: number;
+  semOS: number;
+  perdidos: number;
+  ativoCobranca: number;
+  taxaRecuperacao: number;
+}
+
+export interface EquipamentoAnnualCityStats {
+  cidade: string;
+  total: number;
+  recuperados: number;
+  tentando: number;
+  semOS: number;
+  perdidos: number;
+  taxaRecuperacao: number;
+}
+
+export interface EquipamentoAnnualCauseStats {
+  motivo: string;
+  total: number;
+}
+
+export interface EquipamentoAnnualSummary {
+  totalOrders: number;
+  recuperados: number;
+  tentando: number;
+  semOS: number;
+  perdidos: number;
+  ativoCobranca: number;
+  taxaRecuperacao: number;
+  taxaEfetividadeOS: number;
+}
+
+export interface EquipamentoAnnualResponse {
+  year: string;
+  summary: EquipamentoAnnualSummary;
+  byMonth: EquipamentoAnnualMonthStats[];
+  byCity: EquipamentoAnnualCityStats[];
+  byCause: EquipamentoAnnualCauseStats[];
+  availableYears: string[];
+}

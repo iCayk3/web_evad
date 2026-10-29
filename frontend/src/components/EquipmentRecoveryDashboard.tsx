@@ -99,11 +99,13 @@ const parseFlows = (assunto: string): ParsedFlow[] => {
 interface EquipmentRecoveryDashboardProps {
   selectedMonth?: string;
   onMonthChange?: (month: string) => void;
+  onSwitchToAnnual?: () => void;
 }
 
 export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProps> = ({
   selectedMonth: propMonth,
   onMonthChange,
+  onSwitchToAnnual,
 }) => {
   const [data, setData] = useState<EquipamentoResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -556,6 +558,20 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
               <span className="hidden sm:inline">Prévia Executiva</span>
               <span className="sm:hidden">Prévia</span>
             </button>
+
+            {/* Botão Ver Ano Inteiro */}
+            {onSwitchToAnnual && (
+              <button
+                type="button"
+                onClick={onSwitchToAnnual}
+                className="flex items-center justify-center space-x-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-bold shadow-2xs transition cursor-pointer shrink-0"
+                title="Visualizar a consolidação e KPIs anuais de todos os meses do ano"
+              >
+                <Layers className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="hidden sm:inline">Ver Ano Inteiro (2026)</span>
+                <span className="sm:hidden">Ano Todo</span>
+              </button>
+            )}
 
             {/* Botão Imprimir / Exportar PDF */}
             <button

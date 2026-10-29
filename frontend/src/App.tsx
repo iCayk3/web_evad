@@ -9,14 +9,15 @@ import { RbxConfigModal } from './components/RbxConfigModal';
 import { MonthlyDashboard } from './components/MonthlyDashboard';
 import { AnnualDashboard } from './components/AnnualDashboard';
 import { EquipmentRecoveryDashboard } from './components/EquipmentRecoveryDashboard';
+import { EquipmentAnnualDashboard } from './components/EquipmentAnnualDashboard';
 import { ZEROED_DATA } from './data/mockData';
 import { API_BASE } from './config/api';
 import type { MonthlyCohortData, MonthWithData } from './types';
-import { UploadCloud, FileSpreadsheet, Loader2, KeyRound, Users, BarChart3, TrendingUp, PackageCheck } from 'lucide-react';
+import { UploadCloud, FileSpreadsheet, Loader2, KeyRound, Users, BarChart3, TrendingUp, PackageCheck, Layers } from 'lucide-react';
 
 export function App() {
   const [selectedMonth, setSelectedMonth] = useState('2026-01');
-  const [activeView, setActiveView] = useState<'cohort' | 'monthly' | 'annual' | 'equipamentos'>('cohort');
+  const [activeView, setActiveView] = useState<'cohort' | 'monthly' | 'annual' | 'equipamentos' | 'equipamentos_anual'>('cohort');
   const [viewMode, setViewMode] = useState<'pure' | 'all'>('pure');
   const [cohortData, setCohortData] = useState<MonthlyCohortData>(ZEROED_DATA);
   const [competencias, setCompetencias] = useState<{
@@ -194,6 +195,18 @@ export function App() {
             <PackageCheck className="h-4 w-4 text-blue-600" />
             <span>Recuperação de Equipamentos</span>
           </button>
+
+          <button
+            onClick={() => setActiveView('equipamentos_anual')}
+            className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
+              activeView === 'equipamentos_anual'
+                ? 'border-slate-900 text-slate-900 font-semibold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Layers className="h-4 w-4 text-emerald-600" />
+            <span>Equipamentos (Ano Inteiro)</span>
+          </button>
         </div>
       </nav>
 
@@ -338,6 +351,19 @@ export function App() {
               setSelectedMonth(m);
               loadData(m);
             }}
+            onSwitchToAnnual={() => setActiveView('equipamentos_anual')}
+          />
+        )}
+
+        {activeView === 'equipamentos_anual' && (
+          <EquipmentAnnualDashboard
+            initialYear={selectedMonth.split('-')[0]}
+            onNavigateToMonth={(m) => {
+              setSelectedMonth(m);
+              loadData(m);
+              setActiveView('equipamentos');
+            }}
+            onSwitchToMonthly={() => setActiveView('equipamentos')}
           />
         )}
       </main>
