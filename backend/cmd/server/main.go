@@ -881,15 +881,16 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 
 			isMimo := (res.MonthlyFee <= 0.01)
 
-			// Atualiza o evento com o plano, mensalidade e bairro específicos deste contrato
+			// Atualiza o evento com o plano, mensalidade, bairro e cidade específicos deste contrato
 			_, _ = dbPool.Exec(ctx, `
 				UPDATE eventos_bloqueio SET
 					plano = CASE WHEN $1 != '' THEN $1 ELSE plano END,
 					valor_mensalidade = $2,
 					eh_mimo = $3,
-					bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END
+					bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END,
+					cidade = CASE WHEN $6 != '' THEN $6 ELSE cidade END
 				WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4
-			`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood)
+			`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood, res.City)
 
 			// Atualiza dados do cliente no cadastro
 			if res.MonthlyFee > 0 {
@@ -1151,7 +1152,7 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	`)
 
 	// Enriquecer automaticamente Bairros/Vilas cadastrais (ConsultaClientes serviço 44) caso existam clientes sem bairro
-	enrichMissingBairros(ctx, client)
+	enrichMissingBairros(ctx, client, false)
 
 	if syncStats["total"] == 0 && lastError != nil {
 		errMessage := lastError.Error()
@@ -1191,17 +1192,21 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	}, nil
 }
 
-func enrichMissingBairros(ctx context.Context, client *rbx.Client) (int, int) {
+func enrichMissingBairros(ctx context.Context, client *rbx.Client, refreshAll bool) (int, int) {
 	if dbPool == nil || client == nil {
 		return 0, 0
 	}
 
-	// 1. Obter clientes cadastrados com bairro nulo, vazio ou 'Não Informado'
+	whereClause := "WHERE (bairro IS NULL OR bairro = '' OR bairro = 'Não Informado') AND codigo_rbx IS NOT NULL AND codigo_rbx != ''"
+	if refreshAll {
+		whereClause = "WHERE codigo_rbx IS NOT NULL AND codigo_rbx != ''"
+	}
+
+	// 1. Obter clientes cadastrados
 	rows, err := dbPool.Query(ctx, `
 		SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') 
 		FROM clientes 
-		WHERE (bairro IS NULL OR bairro = '' OR bairro = 'Não Informado')
-		  AND codigo_rbx IS NOT NULL AND codigo_rbx != '' 
+	`+whereClause+`
 		ORDER BY 1
 	`)
 	if err != nil {
@@ -1223,7 +1228,7 @@ func enrichMissingBairros(ctx context.Context, client *rbx.Client) (int, int) {
 		return 0, 0
 	}
 
-	log.Printf("[RBX ENRICH BAIRROS] Enriquecendo %d clientes sem bairro cadastrado via ConsultaClientes (serviço 44)...", len(allCodes))
+	log.Printf("[RBX ENRICH BAIRROS] Enriquecendo %d clientes via ConsultaClientes (serviço 44)...", len(allCodes))
 
 	updatedClients := 0
 	batchSize := 100
@@ -1245,7 +1250,7 @@ func enrichMissingBairros(ctx context.Context, client *rbx.Client) (int, int) {
 				_, err := dbPool.Exec(ctx, `
 					UPDATE clientes SET
 						bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
-						cidade = CASE WHEN (cidade IS NULL OR cidade = '' OR cidade = 'Não Informado') AND $2 != '' THEN $2 ELSE cidade END
+						cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END
 					WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
 				`, info.Neighborhood, info.City, code)
 				if err == nil {
@@ -1255,13 +1260,13 @@ func enrichMissingBairros(ctx context.Context, client *rbx.Client) (int, int) {
 		}
 	}
 
-	// 2. Propagar bairros atualizados da tabela clientes para eventos_bloqueio
+	// 2. Propagar bairros e cidades atualizados da tabela clientes para eventos_bloqueio
 	cmdTag, err := dbPool.Exec(ctx, `
 		UPDATE eventos_bloqueio e
-		SET bairro = c.bairro
+		SET bairro = CASE WHEN c.bairro != '' AND c.bairro != 'Não Informado' THEN c.bairro ELSE e.bairro END,
+		    cidade = CASE WHEN c.cidade != '' AND c.cidade != 'Não Informado' THEN c.cidade ELSE e.cidade END
 		FROM clientes c
 		WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
-		  AND (e.bairro IS NULL OR e.bairro = '' OR e.bairro = 'Não Informado')
 		  AND c.bairro IS NOT NULL AND c.bairro != '' AND c.bairro != 'Não Informado'
 	`)
 	updatedEvents := int64(0)
@@ -1551,28 +1556,48 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 		}
 	}
 
-	// Enriquecer nomes, cidades e bairros dos clientes que não estejam na tabela clientes
-	var missingCliCodes []string
+	// Enriquecer e atualizar nomes, cidades e bairros dos clientes diretamente do RBX
+	var cliCodesToRefresh []string
 	cliCodesSet := make(map[string]bool)
+
+	// 1. Clientes com chamados de retirada de equipamentos
 	for _, at := range atends {
-		if at.CodigoCliente != "" && !cliCodesSet[at.CodigoCliente] {
-			cliCodesSet[at.CodigoCliente] = true
-			var exists bool
-			_ = dbPool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM clientes WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $1)", at.CodigoCliente).Scan(&exists)
-			if !exists {
-				missingCliCodes = append(missingCliCodes, at.CodigoCliente)
-			}
+		cleanCod := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(at.CodigoCliente, ".", ""), ",", ""))
+		if cleanCod != "" && !cliCodesSet[cleanCod] {
+			cliCodesSet[cleanCod] = true
+			cliCodesToRefresh = append(cliCodesToRefresh, cleanCod)
 		}
 	}
 
-	if len(missingCliCodes) > 0 {
-		cliBatchSize := 100
-		for i := 0; i < len(missingCliCodes); i += cliBatchSize {
-			end := i + cliBatchSize
-			if end > len(missingCliCodes) {
-				end = len(missingCliCodes)
+	// 2. Clientes em atenção patrimonial (churn/suspensos) mesmo sem chamado de OS aberta ainda
+	ebRows, ebErr := dbPool.Query(ctx, `
+		SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '')
+		FROM eventos_bloqueio
+		WHERE (status_desfecho IN ('churned', 'suspended') OR status_desfecho IS NULL)
+		  AND codigo_rbx IS NOT NULL AND codigo_rbx != ''
+	`)
+	if ebErr == nil {
+		for ebRows.Next() {
+			var cod string
+			if err := ebRows.Scan(&cod); err == nil {
+				cod = strings.TrimSpace(cod)
+				if cod != "" && !cliCodesSet[cod] {
+					cliCodesSet[cod] = true
+					cliCodesToRefresh = append(cliCodesToRefresh, cod)
+				}
 			}
-			chunk := missingCliCodes[i:end]
+		}
+		ebRows.Close()
+	}
+
+	if len(cliCodesToRefresh) > 0 {
+		cliBatchSize := 100
+		for i := 0; i < len(cliCodesToRefresh); i += cliBatchSize {
+			end := i + cliBatchSize
+			if end > len(cliCodesToRefresh) {
+				end = len(cliCodesToRefresh)
+			}
+			chunk := cliCodesToRefresh[i:end]
 			addrMap, err := client.ConsultarClientes(ctx, chunk)
 			if err == nil {
 				for code, info := range addrMap {
@@ -1587,9 +1612,19 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 				}
 			}
 		}
+
+		// Propagar imediatamente as cidades e bairros atualizados para a tabela de eventos
+		_, _ = dbPool.Exec(ctx, `
+			UPDATE eventos_bloqueio eb
+			SET 
+				cidade = CASE WHEN c.cidade != '' AND c.cidade != 'Não Informado' THEN c.cidade ELSE eb.cidade END,
+				bairro = CASE WHEN c.bairro != '' AND c.bairro != 'Não Informado' THEN c.bairro ELSE eb.bairro END
+			FROM clientes c
+			WHERE REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+		`)
 	}
 
-	log.Printf("[RBX EQUIPAMENTOS SYNC] Sincronização concluída: %d atendimentos de retirada inseridos/atualizados.", count)
+	log.Printf("[RBX EQUIPAMENTOS SYNC] Sincronização concluída: %d atendimentos e %d cadastros de endereços atualizados.", count, len(cliCodesToRefresh))
 	return count, nil
 }
 
@@ -1930,7 +1965,8 @@ func main() {
 			Version: rbxVersion,
 		})
 
-		updatedClients, updatedEvents := enrichMissingBairros(ctx, client)
+		forceAll := r.URL.Query().Get("all") == "true"
+		updatedClients, updatedEvents := enrichMissingBairros(ctx, client, forceAll)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":        true,
