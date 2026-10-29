@@ -179,28 +179,37 @@ func initDB() {
 	log.Println("[PostgreSQL] Conectado com sucesso ao banco evad_db na porta 5433!")
 
 	// Auto-migrations para garantir todas as colunas necessárias
-	_, _ = pool.Exec(ctx, `
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS eh_debito_herdado BOOLEAN DEFAULT false;
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS vencimento_debito_original VARCHAR(20);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS rotulo_debito VARCHAR(100);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS plano VARCHAR(255);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS valor_mensalidade NUMERIC(10, 2) DEFAULT 0.00;
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS eh_mimo BOOLEAN DEFAULT false;
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS contrato_principal VARCHAR(50);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS mimos_vinculados TEXT;
-		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);
-		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);
-		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);
-		CREATE INDEX IF NOT EXISTS idx_clientes_bairro ON clientes(bairro);
-		CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);
-		CREATE INDEX IF NOT EXISTS idx_bloqueio_cidade ON eventos_bloqueio(cidade);
-		CREATE INDEX IF NOT EXISTS idx_clientes_distrito ON clientes(distrito);
-		CREATE INDEX IF NOT EXISTS idx_bloqueio_distrito ON eventos_bloqueio(distrito);
-		CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);
-		CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);
+	_, _ = pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent;`)
 
+	migrationStatements := []string{
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS eh_debito_herdado BOOLEAN DEFAULT false;`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS vencimento_debito_original VARCHAR(20);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS rotulo_debito VARCHAR(100);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS plano VARCHAR(255);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS valor_mensalidade NUMERIC(10, 2) DEFAULT 0.00;`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS eh_mimo BOOLEAN DEFAULT false;`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS contrato_principal VARCHAR(50);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS mimos_vinculados TEXT;`,
+		`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);`,
+		`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);`,
+		`ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);`,
+		`CREATE INDEX IF NOT EXISTS idx_clientes_bairro ON clientes(bairro);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_cidade ON eventos_bloqueio(cidade);`,
+		`CREATE INDEX IF NOT EXISTS idx_clientes_distrito ON clientes(distrito);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_distrito ON eventos_bloqueio(distrito);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);`,
+	}
+	for _, stmt := range migrationStatements {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			log.Printf("[DB MIGRATION NOTICE] %v", err)
+		}
+	}
+
+	_, _ = pool.Exec(ctx, `
 		-- Suporte a Gestão e Recuperação de Equipamentos (Atendimentos RBX)
 		CREATE TABLE IF NOT EXISTS atendimentos_equipamentos (
 			id VARCHAR(50) PRIMARY KEY,
@@ -432,14 +441,14 @@ func calculateSummary(monthKey string, clients []ClientRecord) MonthlyCohortSumm
 
 const operationalCitySQL = `
 	CASE 
-		WHEN unaccent(LOWER(COALESCE(c.distrito, e.distrito, ''))) LIKE '%boa%'
-		  OR unaccent(LOWER(COALESCE(c.cidade, e.cidade, ''))) LIKE '%boa vista%'
+		WHEN LOWER(COALESCE(c.distrito, e.distrito, '')) LIKE '%boa%'
+		  OR LOWER(COALESCE(c.cidade, e.cidade, '')) LIKE '%boa vista%'
 		  OR (
-		      unaccent(LOWER(COALESCE(c.cidade, e.cidade, ''))) LIKE '%quatipuru%'
-		      AND unaccent(LOWER(COALESCE(NULLIF(e.bairro, ''), c.bairro, ''))) IN (
+		      LOWER(COALESCE(c.cidade, e.cidade, '')) LIKE '%quatipuru%'
+		      AND LOWER(COALESCE(NULLIF(e.bairro, ''), c.bairro, '')) IN (
 		          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
 		          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
-		          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+		          'sapolandia', 'sapolândia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 'santo antônio',
 		          'canto do sabia', 'canto do sabiá', 'boa vista'
 		      )
 		  )
@@ -2207,14 +2216,14 @@ func main() {
 					ec.codigo_rbx as codigo_cliente, 
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
 					CASE 
-						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
-						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						WHEN LOWER(COALESCE(c.distrito, '')) LIKE '%boa%'
+						  OR LOWER(COALESCE(c.cidade, '')) LIKE '%boa vista%'
 						  OR (
-						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
-						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						      LOWER(COALESCE(c.cidade, '')) LIKE '%quatipuru%'
+						      AND LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, '')) IN (
 						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
 						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
-						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'sapolandia', 'sapolândia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 'santo antônio',
 						          'canto do sabia', 'canto do sabiá', 'boa vista'
 						      )
 						  )
@@ -2263,14 +2272,14 @@ func main() {
 					ec.codigo_rbx as codigo_cliente,
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
 					CASE 
-						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
-						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						WHEN LOWER(COALESCE(c.distrito, '')) LIKE '%boa%'
+						  OR LOWER(COALESCE(c.cidade, '')) LIKE '%boa vista%'
 						  OR (
-						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
-						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						      LOWER(COALESCE(c.cidade, '')) LIKE '%quatipuru%'
+						      AND LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, '')) IN (
 						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
 						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
-						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'sapolandia', 'sapolândia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 'santo antônio',
 						          'canto do sabia', 'canto do sabiá', 'boa vista'
 						      )
 						  )
@@ -2514,14 +2523,14 @@ func main() {
 					a.status_recuperacao,
 					ec.status_desfecho,
 					CASE 
-						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
-						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						WHEN LOWER(COALESCE(c.distrito, '')) LIKE '%boa%'
+						  OR LOWER(COALESCE(c.cidade, '')) LIKE '%boa vista%'
 						  OR (
-						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
-						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						      LOWER(COALESCE(c.cidade, '')) LIKE '%quatipuru%'
+						      AND LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, '')) IN (
 						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
 						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
-						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'sapolandia', 'sapolândia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 'santo antônio',
 						          'canto do sabia', 'canto do sabiá', 'boa vista'
 						      )
 						  )
@@ -2549,14 +2558,14 @@ func main() {
 					'sem_os' as status_recuperacao,
 					ec.status_desfecho,
 					CASE 
-						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
-						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						WHEN LOWER(COALESCE(c.distrito, '')) LIKE '%boa%'
+						  OR LOWER(COALESCE(c.cidade, '')) LIKE '%boa vista%'
 						  OR (
-						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
-						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						      LOWER(COALESCE(c.cidade, '')) LIKE '%quatipuru%'
+						      AND LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, '')) IN (
 						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
 						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
-						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'sapolandia', 'sapolândia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 'santo antônio',
 						          'canto do sabia', 'canto do sabiá', 'boa vista'
 						      )
 						  )
