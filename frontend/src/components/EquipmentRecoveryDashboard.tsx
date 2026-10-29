@@ -476,27 +476,25 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       {/* 2. Conteúdo em Tela (Ocultado no Print) */}
       <div className="space-y-6 print:hidden animate-fade-in">
         {/* Top Banner / Controls */}
-        <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col 2xl:flex-row 2xl:items-center justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-start sm:items-center gap-3">
-              <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
-                <PackageCheck className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
-                  <span>Recuperação de Equipamentos</span>
-                  <span className="text-[10px] sm:text-[11px] font-semibold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
-                    Gestão de Hardware
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5 break-words">
-                  Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
-                </p>
-              </div>
+        <div className="bg-white border border-slate-200/90 rounded-xl p-4 sm:p-5 shadow-xs flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="p-2.5 bg-blue-50 text-blue-700 rounded-lg shrink-0">
+              <PackageCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2 flex-wrap">
+                <span>Recuperação de Equipamentos</span>
+                <span className="text-[10px] sm:text-[11px] font-semibold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full whitespace-nowrap">
+                  Gestão de Hardware
+                </span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Auditoria estrita dos clientes da planilha de <strong>{formatMonthLabel(selectedMonth)}</strong> cruzados com as ordens de retirada do RBX
+              </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full 2xl:w-auto 2xl:justify-end">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full xl:w-auto xl:justify-end">
             {/* Seletor de Mês */}
             <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 font-medium shrink-0">
               <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
