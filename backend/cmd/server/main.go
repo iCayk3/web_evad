@@ -2519,6 +2519,7 @@ func main() {
 			raw_atends AS (
 				SELECT 
 					a.id, 
+					ec.codigo_clean,
 					ec.mes_competencia,
 					a.status_recuperacao,
 					ec.status_desfecho,
@@ -2547,13 +2548,14 @@ func main() {
 				WHERE (a.mes_competencia = ec.mes_competencia OR (a.data_abertura >= ec.data_bloqueio - interval '15 days' AND a.data_abertura <= ec.data_bloqueio + interval '120 days'))
 			),
 			atends AS (
-				SELECT id, mes_competencia, status_recuperacao, status_desfecho, cidade
+				SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade
 				FROM raw_atends
 				WHERE dup_rank = 1
 			),
 			raw_sem_os AS (
 				SELECT DISTINCT ON (ec.codigo_clean, ec.mes_competencia)
-					'SEM-OS-' || ec.codigo_rbx || '-' || ec.mes_competencia as id,
+					'SEM-OS-' || ec.codigo_rbx as id,
+					ec.codigo_clean,
 					ec.mes_competencia,
 					'sem_os' as status_recuperacao,
 					ec.status_desfecho,
@@ -2591,11 +2593,15 @@ func main() {
 						ELSE u.status_recuperacao
 					END as status_final
 				FROM (
-					SELECT * FROM atends
+					SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade FROM atends
 					UNION ALL
-					SELECT * FROM raw_sem_os
+					SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade FROM raw_sem_os
 				) u
-				LEFT JOIN auditoria_equipamentos_manual aem ON aem.registro_id = u.id
+				LEFT JOIN auditoria_equipamentos_manual aem ON (
+					aem.registro_id = u.id 
+					OR aem.registro_id = 'SEM-OS-' || u.codigo_clean
+					OR (u.status_recuperacao = 'sem_os' AND REPLACE(REPLACE(aem.codigo_cliente, '.', ''), ',', '') = u.codigo_clean)
+				)
 			)
 			SELECT mes_competencia, cidade, status_desfecho, status_final
 			FROM all_items
