@@ -2341,7 +2341,18 @@ func main() {
 				UNION ALL
 				SELECT * FROM sem_os
 			) u
-			LEFT JOIN auditoria_equipamentos_manual aem ON aem.registro_id = u.id
+			LEFT JOIN (
+				SELECT DISTINCT ON (COALESCE(NULLIF(registro_id, ''), codigo_cliente))
+					registro_id, 
+					REPLACE(REPLACE(codigo_cliente, '.', ''), ',', '') as codigo_clean,
+					status_manual, observacao, atualizado_por, atualizado_em
+				FROM auditoria_equipamentos_manual
+				ORDER BY COALESCE(NULLIF(registro_id, ''), codigo_cliente), atualizado_em DESC
+			) aem ON (
+				aem.registro_id = u.id 
+				OR aem.registro_id = 'SEM-OS-' || u.codigo_cliente
+				OR (u.status_recuperacao = 'sem_os' AND aem.codigo_clean = REPLACE(REPLACE(u.codigo_cliente, '.', ''), ',', ''))
+			)
 			ORDER BY 
 				CASE WHEN status_recuperacao = 'sem_os' AND (aem.status_manual IS NULL OR aem.status_manual = '') THEN 1 ELSE 0 END,
 				eh_duplicado ASC,
@@ -2597,10 +2608,17 @@ func main() {
 					UNION ALL
 					SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade FROM raw_sem_os
 				) u
-				LEFT JOIN auditoria_equipamentos_manual aem ON (
+				LEFT JOIN (
+					SELECT DISTINCT ON (COALESCE(NULLIF(registro_id, ''), codigo_cliente))
+						registro_id, 
+						REPLACE(REPLACE(codigo_cliente, '.', ''), ',', '') as codigo_clean,
+						status_manual, observacao, atualizado_por, atualizado_em
+					FROM auditoria_equipamentos_manual
+					ORDER BY COALESCE(NULLIF(registro_id, ''), codigo_cliente), atualizado_em DESC
+				) aem ON (
 					aem.registro_id = u.id 
 					OR aem.registro_id = 'SEM-OS-' || u.codigo_clean
-					OR (u.status_recuperacao = 'sem_os' AND REPLACE(REPLACE(aem.codigo_cliente, '.', ''), ',', '') = u.codigo_clean)
+					OR (u.status_recuperacao = 'sem_os' AND aem.codigo_clean = u.codigo_clean)
 				)
 			)
 			SELECT mes_competencia, cidade, status_desfecho, status_final
