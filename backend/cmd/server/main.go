@@ -191,9 +191,13 @@ func initDB() {
 		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);
+		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);
+		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS distrito VARCHAR(100);
 		CREATE INDEX IF NOT EXISTS idx_clientes_bairro ON clientes(bairro);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_cidade ON eventos_bloqueio(cidade);
+		CREATE INDEX IF NOT EXISTS idx_clientes_distrito ON clientes(distrito);
+		CREATE INDEX IF NOT EXISTS idx_bloqueio_distrito ON eventos_bloqueio(distrito);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);
 
@@ -426,6 +430,24 @@ func calculateSummary(monthKey string, clients []ClientRecord) MonthlyCohortSumm
 	return summary
 }
 
+const operationalCitySQL = `
+	CASE 
+		WHEN unaccent(LOWER(COALESCE(c.distrito, e.distrito, ''))) LIKE '%boa%'
+		  OR unaccent(LOWER(COALESCE(c.cidade, e.cidade, ''))) LIKE '%boa vista%'
+		  OR (
+		      unaccent(LOWER(COALESCE(c.cidade, e.cidade, ''))) LIKE '%quatipuru%'
+		      AND unaccent(LOWER(COALESCE(NULLIF(e.bairro, ''), c.bairro, ''))) IN (
+		          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
+		          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
+		          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+		          'canto do sabia', 'canto do sabiá', 'boa vista'
+		      )
+		  )
+		THEN 'Boa Vista'
+		ELSE COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(e.cidade, ''), c.cidade))), ''), 'Não Informado')
+	END
+`
+
 func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]ClientRecord, error) {
 	if dbPool == nil {
 		return inMemoryClients, nil
@@ -439,7 +461,7 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 	query := `
 		SELECT 
 			e.id, c.codigo_rbx, COALESCE(e.contrato, ''), c.nome, 
-			COALESCE(NULLIF(e.cidade, ''), c.cidade, '') as cidade, 
+			` + operationalCitySQL + ` as cidade, 
 			COALESCE(NULLIF(e.plano, ''), c.plano, ''), 
 			CASE WHEN e.eh_mimo IS TRUE THEN 0.00 ELSE COALESCE(NULLIF(e.valor_mensalidade, 0), c.valor_mensalidade, 0) END,
 			e.ciclo_vencimento, e.mes_competencia,
@@ -884,16 +906,17 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 
 			isMimo := (res.MonthlyFee <= 0.01)
 
-			// Atualiza o evento com o plano, mensalidade, bairro e cidade específicos deste contrato
+			// Atualiza o evento com o plano, mensalidade, bairro, cidade e distrito específicos deste contrato
 			_, _ = dbPool.Exec(ctx, `
 				UPDATE eventos_bloqueio SET
 					plano = CASE WHEN $1 != '' THEN $1 ELSE plano END,
 					valor_mensalidade = $2,
 					eh_mimo = $3,
 					bairro = CASE WHEN $5 != '' THEN $5 ELSE bairro END,
-					cidade = CASE WHEN $6 != '' THEN $6 ELSE cidade END
+					cidade = CASE WHEN $6 != '' THEN $6 ELSE cidade END,
+					distrito = CASE WHEN $7 != '' THEN $7 ELSE distrito END
 				WHERE REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4
-			`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood, res.City)
+			`, res.Plan, res.MonthlyFee, isMimo, cleanNum, res.Neighborhood, res.City, res.District)
 
 			// Atualiza dados do cliente no cadastro
 			if res.MonthlyFee > 0 {
@@ -904,17 +927,19 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 						contrato = CASE WHEN $3 != '' THEN $3 ELSE contrato END,
 						cidade = CASE WHEN $4 != '' THEN $4 ELSE cidade END,
 						nome = CASE WHEN $5 != '' THEN $5 ELSE nome END,
-						bairro = CASE WHEN $8 != '' THEN $8 ELSE bairro END
+						bairro = CASE WHEN $8 != '' THEN $8 ELSE bairro END,
+						distrito = CASE WHEN $9 != '' THEN $9 ELSE distrito END
 					WHERE (codigo_rbx = $6 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $7)
-				`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
+				`, res.MonthlyFee, res.Plan, res.ContractCode, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood, res.District)
 			} else {
 				_, _ = dbPool.Exec(ctx, `
 					UPDATE clientes SET
 						cidade = CASE WHEN (cidade IS NULL OR cidade = '') AND $1 != '' THEN $1 ELSE cidade END,
 						nome = CASE WHEN (nome IS NULL OR nome = '') AND $2 != '' THEN $2 ELSE nome END,
-						bairro = CASE WHEN (bairro IS NULL OR bairro = '') AND $5 != '' THEN $5 ELSE bairro END
+						bairro = CASE WHEN (bairro IS NULL OR bairro = '') AND $5 != '' THEN $5 ELSE bairro END,
+						distrito = CASE WHEN (distrito IS NULL OR distrito = '') AND $6 != '' THEN $6 ELSE distrito END
 					WHERE (codigo_rbx = $3 OR REPLACE(REPLACE(contrato, '.', ''), ',', '') = $4)
-				`, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood)
+				`, res.City, res.ClientName, cleanCli, cleanNum, res.Neighborhood, res.District)
 			}
 
 			var lastOpDate *time.Time = res.LastOperationDate
@@ -1242,13 +1267,15 @@ func syncAddressesFromRbx(ctx context.Context, client *rbx.Client, month string)
 			for code, info := range addrMap {
 				rawCity := strings.TrimSpace(info.City)
 				rawBairro := strings.TrimSpace(info.Neighborhood)
-				if rawCity != "" || rawBairro != "" {
+				rawDistrito := strings.TrimSpace(info.District)
+				if rawCity != "" || rawBairro != "" || rawDistrito != "" {
 					_, _ = dbPool.Exec(ctx, `
 						UPDATE clientes SET
 							bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
-							cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END
+							cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END,
+							distrito = CASE WHEN $4 != '' THEN $4 ELSE distrito END
 						WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
-					`, rawBairro, rawCity, code)
+					`, rawBairro, rawCity, code, rawDistrito)
 					updatedCount++
 				}
 			}
@@ -1260,7 +1287,8 @@ func syncAddressesFromRbx(ctx context.Context, client *rbx.Client, month string)
 		_, _ = dbPool.Exec(ctx, `
 			UPDATE eventos_bloqueio e
 			SET bairro = c.bairro,
-			    cidade = c.cidade
+			    cidade = c.cidade,
+			    distrito = c.distrito
 			FROM clientes c
 			WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
 			  AND e.mes_competencia = $1
@@ -1269,7 +1297,8 @@ func syncAddressesFromRbx(ctx context.Context, client *rbx.Client, month string)
 		_, _ = dbPool.Exec(ctx, `
 			UPDATE eventos_bloqueio e
 			SET bairro = c.bairro,
-			    cidade = c.cidade
+			    cidade = c.cidade,
+			    distrito = c.distrito
 			FROM clientes c
 			WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
 		`)
@@ -2130,7 +2159,21 @@ func main() {
 					COALESCE(a.protocolo, '') as protocolo, 
 					ec.codigo_rbx as codigo_cliente, 
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					COALESCE(NULLIF(TRIM(c.cidade), ''), 'Não Informado') as cidade,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
+						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						  OR (
+						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
+						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
+						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
+						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'canto do sabia', 'canto do sabiá', 'boa vista'
+						      )
+						  )
+						THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade,
 					COALESCE(NULLIF(TRIM(COALESCE(NULLIF(c.bairro, ''), ec.bairro)), ''), 'Não Informado') as bairro,
 					COALESCE(c.contrato, ec.contrato, a.contrato, '') as contrato,
 					COALESCE(c.plano, ec.plano, '') as plano,
@@ -2172,7 +2215,21 @@ func main() {
 					'S/N' as protocolo,
 					ec.codigo_rbx as codigo_cliente,
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					COALESCE(NULLIF(TRIM(c.cidade), ''), 'Não Informado') as cidade,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(c.distrito, ''))) LIKE '%boa%'
+						  OR unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%boa vista%'
+						  OR (
+						      unaccent(LOWER(COALESCE(c.cidade, ''))) LIKE '%quatipuru%'
+						      AND unaccent(LOWER(COALESCE(NULLIF(c.bairro, ''), ec.bairro, ''))) IN (
+						          'jabuti', 'patchouli', 'patichoulin', 'castelo', 'novo humirinzal', 
+						          'humirinzal', 'embauba', 'embaúba', 'abrejado', 'salgadinho', 
+						          'sapolandia', 'guarazao', 'guarazão', 'arapiranga', 'santo antonio', 
+						          'canto do sabia', 'canto do sabiá', 'boa vista'
+						      )
+						  )
+						THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade,
 					COALESCE(NULLIF(TRIM(COALESCE(NULLIF(ec.bairro, ''), c.bairro)), ''), 'Não Informado') as bairro,
 					COALESCE(ec.contrato, c.contrato, '') as contrato,
 					COALESCE(ec.plano, c.plano, '') as plano,
@@ -2486,10 +2543,10 @@ func main() {
 		summary := calculateSummary(month, clients)
 
 		planDimension := "COALESCE(NULLIF(TRIM(COALESCE(NULLIF(e.plano, ''), c.plano)), ''), 'Não Informado')"
-		cityDimension := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')"
+		cityDimension := operationalCitySQL
 		neighborhoodDimension := "COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(e.bairro, ''), c.bairro))), ''), 'Não Informado')"
 		cycleDimension := "e.ciclo_vencimento"
-		cityExpr := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), '')"
+		cityExpr := operationalCitySQL
 
 		byPlan, _ := queryBreakdown(ctx, planDimension, "", "e.mes_competencia = $1", month, viewMode)
 		byCity, _ := queryBreakdown(ctx, cityDimension, "", "e.mes_competencia = $1", month, viewMode)
@@ -2543,10 +2600,10 @@ func main() {
 
 		// 1. Quebras consolidadas do ano todo
 		planDimension := "COALESCE(NULLIF(TRIM(COALESCE(NULLIF(e.plano, ''), c.plano)), ''), 'Não Informado')"
-		cityDimension := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')"
+		cityDimension := operationalCitySQL
 		neighborhoodDimension := "COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(e.bairro, ''), c.bairro))), ''), 'Não Informado')"
 		cycleDimension := "e.ciclo_vencimento"
-		cityExpr := "COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), '')"
+		cityExpr := operationalCitySQL
 
 		byPlan, _ := queryBreakdown(ctx, planDimension, "", "e.mes_competencia LIKE $1", filterYear, viewMode)
 		byCity, _ := queryBreakdown(ctx, cityDimension, "", "e.mes_competencia LIKE $1", filterYear, viewMode)

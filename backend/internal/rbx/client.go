@@ -437,6 +437,7 @@ type ContractStatusResult struct {
 	DueDay             int        `json:"dueDay"`
 	City               string     `json:"city"`
 	Neighborhood       string     `json:"neighborhood"` // Bairro / Vila do cliente ou instalação
+	District           string     `json:"district"`     // Distrito cadastral (ex: Boa Vista)
 	LastOperationDate  *time.Time `json:"lastOperationDate"`
 	CancellationReason string     `json:"cancellationReason"`
 	DaysOverdue        int        `json:"daysOverdue"`
@@ -599,9 +600,10 @@ func (c *Client) ConsultarContratos(ctx context.Context, contractCodes []string)
 		daysOverdue := toInt(rc, "Qtde_Dias_Vencido")
 		cancellationReason := toStr(rc, "Cancelamento_Motivo", "motivo_cancelamento")
 
-		// Endereço / Cidade e Bairro/Vila
+		// Endereço / Cidade, Bairro/Vila e Distrito
 		city := toStr(rc, "EnderecoInstalacao_Cidade", "EnderecoCobranca_Cidade", "cidade")
 		neighborhood := toStr(rc, "EnderecoInstalacao_Bairro", "EnderecoCobranca_Bairro", "bairro", "Bairro")
+		distrito := toStr(rc, "EnderecoInstalacao_Distrito", "EnderecoCobranca_Distrito", "distrito", "Distrito")
 
 		// Data da última operação
 		lastOpStr := toStr(rc, "DataUltimaOperacao", "data_ultima_operacao")
@@ -633,6 +635,7 @@ func (c *Client) ConsultarContratos(ctx context.Context, contractCodes []string)
 			DueDay:             dueDay,
 			City:               city,
 			Neighborhood:       neighborhood,
+			District:           distrito,
 			LastOperationDate:  lastOpDate,
 			CancellationReason: cancellationReason,
 			DaysOverdue:        daysOverdue,
@@ -770,6 +773,7 @@ type ClientAddressResult struct {
 	Name         string `json:"name"`
 	City         string `json:"city"`
 	Neighborhood string `json:"neighborhood"` // Bairro / Vila
+	District     string `json:"district"`     // Distrito cadastral (ex: Boa Vista)
 }
 
 // ConsultarClientes consulta a ficha cadastral dos clientes informados para obter Cidade e Bairro/Vila
@@ -873,13 +877,15 @@ func (c *Client) ConsultarClientes(ctx context.Context, clientCodes []string) (m
 
 			name := toStr(rc, "Nome", "nome", "Cliente_Nome")
 			city := toStr(rc, "Cidade", "cidade", "Cobr_Cidade")
-			bairro := toStr(rc, "Bairro", "bairro", "Cobr_Bairro", "Distrito", "distrito")
+			bairro := toStr(rc, "Bairro", "bairro", "Cobr_Bairro")
+			distrito := toStr(rc, "Distrito", "distrito")
 
 			resultMap[cliCodeClean] = ClientAddressResult{
 				ClientCode:   cliCodeClean,
 				Name:         name,
 				City:         city,
 				Neighborhood: bairro,
+				District:     distrito,
 			}
 		}
 	}

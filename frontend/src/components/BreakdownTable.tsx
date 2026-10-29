@@ -348,7 +348,7 @@ export function BreakdownTable({
               <option value="all">Todas as Cidades ({uniqueCities.length})</option>
               {uniqueCities.map((city) => (
                 <option key={city} value={city}>
-                  {city}
+                  {city}{city.toLowerCase().includes('boa vista') ? ' (Distrito de Quatipuru)' : ''}
                 </option>
               ))}
             </select>
@@ -457,6 +457,11 @@ export function BreakdownTable({
                           <span className="font-bold text-slate-950 text-xs tracking-tight">
                             {group.city}
                           </span>
+                          {group.city.toLowerCase().includes('boa vista') && (
+                            <span className="text-[10px] bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.2 rounded font-medium">
+                              Distrito de Quatipuru
+                            </span>
+                          )}
                           <span className="text-[10px] bg-white border border-slate-300 text-slate-600 px-1.5 py-0.2 rounded font-normal shadow-2xs">
                             {group.bairros.length} {group.bairros.length === 1 ? 'bairro/vila' : 'bairros/vilas'}
                           </span>
@@ -617,6 +622,11 @@ export function BreakdownTable({
                     <td className="py-2.5 px-4 font-medium text-slate-900">
                       <div className="flex items-center space-x-2">
                         <span>{item.name}</span>
+                        {item.name.toLowerCase().includes('boa vista') && (
+                          <span className="text-[10px] bg-sky-50 text-sky-800 border border-sky-200 px-1.5 py-0.5 rounded font-medium whitespace-nowrap">
+                            Distrito de Quatipuru
+                          </span>
+                        )}
                         {item.city && (
                           <span className="text-[10px] bg-sky-50 text-sky-700 border border-sky-200 px-1.5 py-0.5 rounded font-normal whitespace-nowrap">
                             {item.city}

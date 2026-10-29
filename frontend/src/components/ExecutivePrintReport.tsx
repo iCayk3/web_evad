@@ -26,6 +26,27 @@ export const ExecutivePrintReport: React.FC<ExecutivePrintReportProps> = ({ data
   const byCycle = data.byCycle || [];
   const byPlan = data.byPlan || [];
   const byCity = data.byCity || [];
+  const byNeighborhood = data.byNeighborhood || [];
+
+  const topBairrosMap = useMemo(() => {
+    const map = new Map<string, BreakdownItem[]>();
+    byNeighborhood.forEach((item) => {
+      const cityKey = formatCityName(item.city || '');
+      if (!cityKey) return;
+      if (!map.has(cityKey)) {
+        map.set(cityKey, []);
+      }
+      map.get(cityKey)!.push(item);
+    });
+
+    const result: Record<string, string> = {};
+    for (const [cityKey, items] of map.entries()) {
+      const sorted = [...items].sort((a, b) => b.totalBlocked - a.totalBlocked);
+      const topNames = sorted.slice(0, 4).map((i) => i.name);
+      result[cityKey] = topNames.join(', ');
+    }
+    return result;
+  }, [byNeighborhood]);
 
   const formatCurrency = (val: number) => {
     return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -629,9 +650,26 @@ export const ExecutivePrintReport: React.FC<ExecutivePrintReportProps> = ({ data
             {allCities.map((city) => {
               const pendVal = city.totalMrr - city.returnedMrr;
               const pendC = city.totalBlocked - city.returnedCount;
+              const isBoaVista = city.name.toLowerCase().includes('boa vista');
+              const bairrosStr = topBairrosMap[city.name];
+
               return (
                 <tr key={city.name} className="border-b border-slate-100 hover:bg-slate-50/50">
-                  <td className="py-0.5 px-1.5 font-semibold text-slate-800">{city.name}</td>
+                  <td className="py-0.5 px-1.5 font-semibold text-slate-800">
+                    <div className="flex items-center space-x-1">
+                      <span>{city.name}</span>
+                      {isBoaVista && (
+                        <span className="text-[6.5px] bg-sky-100 text-sky-800 border border-sky-300 font-bold px-1 py-0.2 rounded whitespace-nowrap">
+                          Distrito de Quatipuru
+                        </span>
+                      )}
+                    </div>
+                    {bairrosStr && (
+                      <div className="text-[6.8px] text-slate-500 font-normal leading-tight mt-0.5">
+                        <span className="text-slate-400">Vilas/Bairros:</span> {bairrosStr}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-0.5 px-1.5 text-right font-medium">{formatNumber(city.totalBlocked)}</td>
                   <td className="py-0.5 px-1.5 text-right font-bold text-emerald-700">{formatNumber(city.returnedCount)}</td>
                   <td className="py-0.5 px-1.5 text-right font-bold text-rose-700">{formatNumber(pendC)}</td>

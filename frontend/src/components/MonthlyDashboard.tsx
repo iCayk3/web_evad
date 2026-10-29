@@ -385,8 +385,8 @@ export function MonthlyDashboard({ initialMonth = '2026-01', viewMode = 'pure', 
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart
                         data={data.byCity.slice(0, 6).map((c) => ({
-                          name: c.name.length > 15 ? c.name.substring(0, 14) + '…' : c.name,
-                          fullName: c.name,
+                          name: c.name.toLowerCase().includes('boa vista') ? 'Boa Vista (Distrito)' : (c.name.length > 15 ? c.name.substring(0, 14) + '…' : c.name),
+                          fullName: c.name.toLowerCase().includes('boa vista') ? 'Boa Vista (Distrito de Quatipuru)' : c.name,
                           total: c.totalBlocked,
                           voltaram: c.returnedCount,
                           suspensos: c.suspendedCount,

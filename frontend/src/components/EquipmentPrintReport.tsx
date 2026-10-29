@@ -504,9 +504,20 @@ export const EquipmentPrintReport: React.FC<EquipmentPrintReportProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {cityStats.map((c, i) => (
-                <tr key={c.cidade} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                  <td className="py-1 px-2 font-bold text-slate-900">{c.cidade}</td>
+              {cityStats.map((c, i) => {
+                const isBoaVista = c.cidade.toLowerCase().includes('boa vista');
+                return (
+                  <tr key={c.cidade} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                    <td className="py-1 px-2 font-bold text-slate-900">
+                      <div className="flex items-center space-x-1">
+                        <span>{c.cidade}</span>
+                        {isBoaVista && (
+                          <span className="text-[6.5px] bg-sky-100 text-sky-800 border border-sky-300 font-bold px-1 py-0.2 rounded whitespace-nowrap">
+                            Distrito de Quatipuru
+                          </span>
+                        )}
+                      </div>
+                    </td>
                   <td className="py-1 px-2 text-right font-semibold">{c.total}</td>
                   <td className="py-1 px-2 text-right font-bold text-emerald-700">{c.recuperados}</td>
                   <td className="py-1 px-2 text-right text-blue-700">{c.tentando}</td>
@@ -521,7 +532,8 @@ export const EquipmentPrintReport: React.FC<EquipmentPrintReportProps> = ({
                     {formatCurrency(c.total * HARDWARE_UNIT_VALUE)}
                   </td>
                 </tr>
-              ))}
+              );
+            })}
               <tr className="bg-slate-100 font-bold border-t border-slate-300 text-slate-900">
                 <td className="py-1.5 px-2 uppercase">Total Geral</td>
                 <td className="py-1.5 px-2 text-right">{totalNonReturned}</td>

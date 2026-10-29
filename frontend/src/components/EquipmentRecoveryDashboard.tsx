@@ -1076,7 +1076,14 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                   className="p-3.5 rounded-xl border border-slate-200 hover:border-slate-400 bg-slate-50/50 hover:bg-slate-100/70 transition cursor-pointer group"
                 >
                   <div className="flex items-center justify-between font-bold text-slate-900 text-xs mb-1.5">
-                    <span className="group-hover:text-blue-600 transition">{c.cidade}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="group-hover:text-blue-600 transition">{c.cidade}</span>
+                      {c.cidade.toLowerCase().includes('boa vista') && (
+                        <span className="text-[9px] bg-sky-50 text-sky-800 border border-sky-200 px-1 py-0.2 rounded font-medium">
+                          Distrito
+                        </span>
+                      )}
+                    </div>
                     <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
                       c.taxaRecuperacao >= 50
                         ? 'bg-emerald-100 text-emerald-800'
@@ -1161,6 +1168,11 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                     }`}
                   >
                     <span className="font-semibold">{c.cidade}</span>
+                    {c.cidade.toLowerCase().includes('boa vista') && (
+                      <span className="text-[9px] bg-sky-100 text-sky-800 border border-sky-200 px-1 py-0.2 rounded font-medium">
+                        Distrito
+                      </span>
+                    )}
                     <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${cityFilter === c.cidade ? 'bg-slate-800 text-white' : 'bg-slate-200 text-slate-800'}`}>
                       {c.total}
                     </span>
