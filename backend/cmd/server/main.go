@@ -190,8 +190,10 @@ func initDB() {
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS mimos_vinculados TEXT;
 		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
 		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS bairro VARCHAR(100);
+		ALTER TABLE eventos_bloqueio ADD COLUMN IF NOT EXISTS cidade VARCHAR(100);
 		CREATE INDEX IF NOT EXISTS idx_clientes_bairro ON clientes(bairro);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_bairro ON eventos_bloqueio(bairro);
+		CREATE INDEX IF NOT EXISTS idx_bloqueio_cidade ON eventos_bloqueio(cidade);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);
 		CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);
 
@@ -434,7 +436,7 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 		whereClause += " AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL)"
 	}
 
-	query := fmt.Sprintf(`
+	query := `
 		SELECT 
 			e.id, c.codigo_rbx, COALESCE(e.contrato, ''), c.nome, 
 			COALESCE(c.cidade, ''), 
@@ -462,9 +464,9 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 			COALESCE(NULLIF(e.bairro, ''), c.bairro, '') as bairro
 		FROM eventos_bloqueio e
 		JOIN clientes c ON c.codigo_rbx = e.codigo_rbx
-		WHERE %s
+		WHERE ` + whereClause + `
 		ORDER BY e.data_bloqueio DESC
-	`, whereClause)
+	`
 
 	rows, err := dbPool.Query(ctx, query, month)
 	if err != nil {
@@ -1154,6 +1156,58 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	// Enriquecer automaticamente Bairros/Vilas cadastrais (ConsultaClientes serviço 44) caso existam clientes sem bairro
 	enrichMissingBairros(ctx, client, false)
 
+	// Atualizar endereços (Cidade e Bairro) de todos os clientes da competência diretamente via ConsultaClientes (serviço 44)
+	if month != "" {
+		mRows, mErr := dbPool.Query(ctx, `
+			SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '')
+			FROM eventos_bloqueio
+			WHERE mes_competencia = $1 AND codigo_rbx IS NOT NULL AND codigo_rbx != ''
+		`, month)
+		if mErr == nil {
+			var monthCliCodes []string
+			for mRows.Next() {
+				var cod string
+				if err := mRows.Scan(&cod); err == nil && cod != "" {
+					monthCliCodes = append(monthCliCodes, cod)
+				}
+			}
+			mRows.Close()
+
+			for i := 0; i < len(monthCliCodes); i += 100 {
+				end := i + 100
+				if end > len(monthCliCodes) {
+					end = len(monthCliCodes)
+				}
+				chunk := monthCliCodes[i:end]
+				addrMap, err := client.ConsultarClientes(ctx, chunk)
+				if err == nil {
+					for code, info := range addrMap {
+						normCity := normalizeCityName(info.City)
+						normBairro := strings.TrimSpace(info.Neighborhood)
+						if normCity != "" || normBairro != "" {
+							_, _ = dbPool.Exec(ctx, `
+								UPDATE clientes SET
+									bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
+									cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END
+								WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
+							`, normBairro, normCity, code)
+						}
+					}
+				}
+			}
+
+			// Propagar para eventos_bloqueio
+			_, _ = dbPool.Exec(ctx, `
+				UPDATE eventos_bloqueio e
+				SET bairro = c.bairro,
+				    cidade = c.cidade
+				FROM clientes c
+				WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+				  AND e.mes_competencia = $1
+			`, month)
+		}
+	}
+
 	if syncStats["total"] == 0 && lastError != nil {
 		errMessage := lastError.Error()
 		_, _ = dbPool.Exec(ctx, `
@@ -1190,6 +1244,53 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 		Strategy:   strategy,
 		Duration:   durationStr,
 	}, nil
+}
+
+func normalizeCityName(cityName string) string {
+	clean := strings.TrimSpace(cityName)
+	if clean == "" {
+		return ""
+	}
+	norm := strings.ToLower(clean)
+	norm = strings.ReplaceAll(norm, "ã", "a")
+	norm = strings.ReplaceAll(norm, "á", "a")
+	norm = strings.ReplaceAll(norm, "â", "a")
+	norm = strings.ReplaceAll(norm, "é", "e")
+	norm = strings.ReplaceAll(norm, "ê", "e")
+	norm = strings.ReplaceAll(norm, "í", "i")
+	norm = strings.ReplaceAll(norm, "ó", "o")
+	norm = strings.ReplaceAll(norm, "ô", "o")
+	norm = strings.ReplaceAll(norm, "õ", "o")
+	norm = strings.ReplaceAll(norm, "ú", "u")
+
+	if strings.Contains(norm, "pirabas") {
+		return "São João de Pirabas"
+	}
+	if strings.Contains(norm, "magalhaes") {
+		return "Magalhães Barata"
+	}
+	if strings.Contains(norm, "maracana") {
+		return "Maracanã"
+	}
+	if strings.Contains(norm, "santarem") {
+		return "Santarém Novo"
+	}
+	if strings.Contains(norm, "salinopolis") {
+		return "Salinópolis"
+	}
+	if strings.Contains(norm, "quatipuru") {
+		return "Quatipuru"
+	}
+	if strings.Contains(norm, "primavera") {
+		return "Primavera"
+	}
+	if strings.Contains(norm, "marapanim") {
+		return "Marapanim"
+	}
+	if strings.Contains(norm, "boa vista") {
+		return "Boa Vista"
+	}
+	return clean
 }
 
 func enrichMissingBairros(ctx context.Context, client *rbx.Client, refreshAll bool) (int, int) {
@@ -2044,7 +2145,18 @@ func main() {
 					COALESCE(a.protocolo, '') as protocolo, 
 					ec.codigo_rbx as codigo_cliente, 
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%pirabas%' THEN 'São João de Pirabas'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%magalhaes%' THEN 'Magalhães Barata'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%maracana%' THEN 'Maracanã'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%santarem%' THEN 'Santarém Novo'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%salinopolis%' THEN 'Salinópolis'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%quatipuru%' THEN 'Quatipuru'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%primavera%' THEN 'Primavera'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%marapanim%' THEN 'Marapanim'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%boa vista%' THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade,
 					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(c.bairro, ''), ec.bairro))), ''), 'Não Informado') as bairro,
 					COALESCE(c.contrato, ec.contrato, a.contrato, '') as contrato,
 					COALESCE(c.plano, ec.plano, '') as plano,
@@ -2086,7 +2198,18 @@ func main() {
 					'S/N' as protocolo,
 					ec.codigo_rbx as codigo_cliente,
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado') as cidade,
+					CASE 
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%pirabas%' THEN 'São João de Pirabas'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%magalhaes%' THEN 'Magalhães Barata'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%maracana%' THEN 'Maracanã'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%santarem%' THEN 'Santarém Novo'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%salinopolis%' THEN 'Salinópolis'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%quatipuru%' THEN 'Quatipuru'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%primavera%' THEN 'Primavera'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%marapanim%' THEN 'Marapanim'
+						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%boa vista%' THEN 'Boa Vista'
+						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
+					END as cidade,
 					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(ec.bairro, ''), c.bairro))), ''), 'Não Informado') as bairro,
 					COALESCE(ec.contrato, c.contrato, '') as contrato,
 					COALESCE(ec.plano, c.plano, '') as plano,
@@ -3022,7 +3145,7 @@ func main() {
 						cidade = EXCLUDED.cidade,
 						plano = CASE WHEN NOT $9 THEN EXCLUDED.plano ELSE clientes.plano END,
 						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
-				`, c.RbxCode, c.Contract, c.Name, c.City, c.Plan, c.MonthlyFee, c.Status, c.Neighborhood, isMimoCandidate)
+				`, c.RbxCode, c.Contract, c.Name, normalizeCityName(c.City), c.Plan, c.MonthlyFee, c.Status, c.Neighborhood, isMimoCandidate)
 				if err != nil {
 					log.Printf("[DB ERROR insert cliente %s] %v", c.RbxCode, err)
 					_ = tx.Rollback(ctx)
