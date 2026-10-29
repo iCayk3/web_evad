@@ -439,7 +439,7 @@ func queryCohortFromDB(ctx context.Context, month string, viewMode string) ([]Cl
 	query := `
 		SELECT 
 			e.id, c.codigo_rbx, COALESCE(e.contrato, ''), c.nome, 
-			COALESCE(c.cidade, ''), 
+			COALESCE(NULLIF(e.cidade, ''), c.cidade, '') as cidade, 
 			COALESCE(NULLIF(e.plano, ''), c.plano, ''), 
 			CASE WHEN e.eh_mimo IS TRUE THEN 0.00 ELSE COALESCE(NULLIF(e.valor_mensalidade, 0), c.valor_mensalidade, 0) END,
 			e.ciclo_vencimento, e.mes_competencia,
@@ -717,6 +717,12 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 		return nil, fmt.Errorf("integração RBX não configurada. Configure a URL e a Chave de Integração do RBX antes de sincronizar")
 	}
 
+	client := rbx.NewClient(rbx.Config{
+		URL:     rbxURL,
+		Token:   rbxToken,
+		Version: rbxVersion,
+	})
+
 	// 2. Buscar eventos de bloqueio a sincronizar
 	type EventSyncInfo struct {
 		ID              string
@@ -786,9 +792,10 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	nowStr := now.Format("02/01/2006 15:04:05")
 
 	if len(eventRows) == 0 {
+		_, _ = syncAddressesFromRbx(ctx, client, month)
 		return &SyncResult{
 			Success:    true,
-			Message:    "Nenhum contrato pendente na base para sincronizar (todos já regularizados ou consolidados).",
+			Message:    "Endereços e dados cadastrais sincronizados com o RBX com sucesso (todos os contratos já regularizados).",
 			LastSyncAt: nowStr,
 			Strategy:   strategy,
 			Duration:   time.Since(start).Round(time.Millisecond).String(),
@@ -813,12 +820,6 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 			}
 		}
 	}
-
-	client := rbx.NewClient(rbx.Config{
-		URL:     rbxURL,
-		Token:   rbxToken,
-		Version: rbxVersion,
-	})
 
 	// 2.1 Consulta antecipada de faturas abertas no RBX para a "Regra da Soberania do Boleto" (Opção 1)
 	type openDocInfo struct {
@@ -1156,57 +1157,8 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	// Enriquecer automaticamente Bairros/Vilas cadastrais (ConsultaClientes serviço 44) caso existam clientes sem bairro
 	enrichMissingBairros(ctx, client, false)
 
-	// Atualizar endereços (Cidade e Bairro) de todos os clientes da competência diretamente via ConsultaClientes (serviço 44)
-	if month != "" {
-		mRows, mErr := dbPool.Query(ctx, `
-			SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '')
-			FROM eventos_bloqueio
-			WHERE mes_competencia = $1 AND codigo_rbx IS NOT NULL AND codigo_rbx != ''
-		`, month)
-		if mErr == nil {
-			var monthCliCodes []string
-			for mRows.Next() {
-				var cod string
-				if err := mRows.Scan(&cod); err == nil && cod != "" {
-					monthCliCodes = append(monthCliCodes, cod)
-				}
-			}
-			mRows.Close()
-
-			for i := 0; i < len(monthCliCodes); i += 100 {
-				end := i + 100
-				if end > len(monthCliCodes) {
-					end = len(monthCliCodes)
-				}
-				chunk := monthCliCodes[i:end]
-				addrMap, err := client.ConsultarClientes(ctx, chunk)
-				if err == nil {
-					for code, info := range addrMap {
-						normCity := normalizeCityName(info.City)
-						normBairro := strings.TrimSpace(info.Neighborhood)
-						if normCity != "" || normBairro != "" {
-							_, _ = dbPool.Exec(ctx, `
-								UPDATE clientes SET
-									bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
-									cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END
-								WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
-							`, normBairro, normCity, code)
-						}
-					}
-				}
-			}
-
-			// Propagar para eventos_bloqueio
-			_, _ = dbPool.Exec(ctx, `
-				UPDATE eventos_bloqueio e
-				SET bairro = c.bairro,
-				    cidade = c.cidade
-				FROM clientes c
-				WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
-				  AND e.mes_competencia = $1
-			`, month)
-		}
-	}
+	// Atualizar endereços (Cidade e Bairro) diretamente do RBX via ConsultaClientes (serviço 44)
+	_, _ = syncAddressesFromRbx(ctx, client, month)
 
 	if syncStats["total"] == 0 && lastError != nil {
 		errMessage := lastError.Error()
@@ -1246,51 +1198,84 @@ func executeRbxSync(ctx context.Context, month string, deltaOnly bool) (*SyncRes
 	}, nil
 }
 
-func normalizeCityName(cityName string) string {
-	clean := strings.TrimSpace(cityName)
-	if clean == "" {
-		return ""
+func syncAddressesFromRbx(ctx context.Context, client *rbx.Client, month string) (int, error) {
+	if dbPool == nil || client == nil {
+		return 0, nil
 	}
-	norm := strings.ToLower(clean)
-	norm = strings.ReplaceAll(norm, "ã", "a")
-	norm = strings.ReplaceAll(norm, "á", "a")
-	norm = strings.ReplaceAll(norm, "â", "a")
-	norm = strings.ReplaceAll(norm, "é", "e")
-	norm = strings.ReplaceAll(norm, "ê", "e")
-	norm = strings.ReplaceAll(norm, "í", "i")
-	norm = strings.ReplaceAll(norm, "ó", "o")
-	norm = strings.ReplaceAll(norm, "ô", "o")
-	norm = strings.ReplaceAll(norm, "õ", "o")
-	norm = strings.ReplaceAll(norm, "ú", "u")
 
-	if strings.Contains(norm, "pirabas") {
-		return "São João de Pirabas"
+	var queryClients string
+	var queryArgs []interface{}
+	if month != "" {
+		queryClients = `SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') 
+		                FROM eventos_bloqueio 
+		                WHERE mes_competencia = $1 AND codigo_rbx IS NOT NULL AND codigo_rbx != ''`
+		queryArgs = append(queryArgs, month)
+	} else {
+		queryClients = `SELECT DISTINCT REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') 
+		                FROM eventos_bloqueio 
+		                WHERE codigo_rbx IS NOT NULL AND codigo_rbx != ''`
 	}
-	if strings.Contains(norm, "magalhaes") {
-		return "Magalhães Barata"
+
+	mRows, mErr := dbPool.Query(ctx, queryClients, queryArgs...)
+	if mErr != nil {
+		return 0, mErr
 	}
-	if strings.Contains(norm, "maracana") {
-		return "Maracanã"
+	defer mRows.Close()
+
+	var cliCodes []string
+	for mRows.Next() {
+		var cod string
+		if err := mRows.Scan(&cod); err == nil && cod != "" {
+			cliCodes = append(cliCodes, cod)
+		}
 	}
-	if strings.Contains(norm, "santarem") {
-		return "Santarém Novo"
+
+	updatedCount := 0
+	for i := 0; i < len(cliCodes); i += 100 {
+		end := i + 100
+		if end > len(cliCodes) {
+			end = len(cliCodes)
+		}
+		chunk := cliCodes[i:end]
+		addrMap, err := client.ConsultarClientes(ctx, chunk)
+		if err == nil {
+			for code, info := range addrMap {
+				rawCity := strings.TrimSpace(info.City)
+				rawBairro := strings.TrimSpace(info.Neighborhood)
+				if rawCity != "" || rawBairro != "" {
+					_, _ = dbPool.Exec(ctx, `
+						UPDATE clientes SET
+							bairro = CASE WHEN $1 != '' THEN $1 ELSE bairro END,
+							cidade = CASE WHEN $2 != '' THEN $2 ELSE cidade END
+						WHERE REPLACE(REPLACE(codigo_rbx, '.', ''), ',', '') = $3
+					`, rawBairro, rawCity, code)
+					updatedCount++
+				}
+			}
+		}
 	}
-	if strings.Contains(norm, "salinopolis") {
-		return "Salinópolis"
+
+	// Propagar fielmente o que está cadastrado no RBX para eventos_bloqueio
+	if month != "" {
+		_, _ = dbPool.Exec(ctx, `
+			UPDATE eventos_bloqueio e
+			SET bairro = c.bairro,
+			    cidade = c.cidade
+			FROM clientes c
+			WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+			  AND e.mes_competencia = $1
+		`, month)
+	} else {
+		_, _ = dbPool.Exec(ctx, `
+			UPDATE eventos_bloqueio e
+			SET bairro = c.bairro,
+			    cidade = c.cidade
+			FROM clientes c
+			WHERE REPLACE(REPLACE(e.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+		`)
 	}
-	if strings.Contains(norm, "quatipuru") {
-		return "Quatipuru"
-	}
-	if strings.Contains(norm, "primavera") {
-		return "Primavera"
-	}
-	if strings.Contains(norm, "marapanim") {
-		return "Marapanim"
-	}
-	if strings.Contains(norm, "boa vista") {
-		return "Boa Vista"
-	}
-	return clean
+
+	return updatedCount, nil
 }
 
 func enrichMissingBairros(ctx context.Context, client *rbx.Client, refreshAll bool) (int, int) {
@@ -2145,19 +2130,8 @@ func main() {
 					COALESCE(a.protocolo, '') as protocolo, 
 					ec.codigo_rbx as codigo_cliente, 
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					CASE 
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%pirabas%' THEN 'São João de Pirabas'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%magalhaes%' THEN 'Magalhães Barata'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%maracana%' THEN 'Maracanã'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%santarem%' THEN 'Santarém Novo'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%salinopolis%' THEN 'Salinópolis'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%quatipuru%' THEN 'Quatipuru'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%primavera%' THEN 'Primavera'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%marapanim%' THEN 'Marapanim'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%boa vista%' THEN 'Boa Vista'
-						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
-					END as cidade,
-					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(c.bairro, ''), ec.bairro))), ''), 'Não Informado') as bairro,
+					COALESCE(NULLIF(TRIM(c.cidade), ''), 'Não Informado') as cidade,
+					COALESCE(NULLIF(TRIM(COALESCE(NULLIF(c.bairro, ''), ec.bairro)), ''), 'Não Informado') as bairro,
 					COALESCE(c.contrato, ec.contrato, a.contrato, '') as contrato,
 					COALESCE(c.plano, ec.plano, '') as plano,
 					a.data_abertura, 
@@ -2198,19 +2172,8 @@ func main() {
 					'S/N' as protocolo,
 					ec.codigo_rbx as codigo_cliente,
 					COALESCE(c.nome, 'Cliente ' || ec.codigo_rbx) as nome_cliente,
-					CASE 
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%pirabas%' THEN 'São João de Pirabas'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%magalhaes%' THEN 'Magalhães Barata'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%maracana%' THEN 'Maracanã'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%santarem%' THEN 'Santarém Novo'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%salinopolis%' THEN 'Salinópolis'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%quatipuru%' THEN 'Quatipuru'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%primavera%' THEN 'Primavera'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%marapanim%' THEN 'Marapanim'
-						WHEN unaccent(LOWER(COALESCE(NULLIF(c.cidade, ''), ''))) LIKE '%boa vista%' THEN 'Boa Vista'
-						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
-					END as cidade,
-					COALESCE(NULLIF(INITCAP(TRIM(COALESCE(NULLIF(ec.bairro, ''), c.bairro))), ''), 'Não Informado') as bairro,
+					COALESCE(NULLIF(TRIM(c.cidade), ''), 'Não Informado') as cidade,
+					COALESCE(NULLIF(TRIM(COALESCE(NULLIF(ec.bairro, ''), c.bairro)), ''), 'Não Informado') as bairro,
 					COALESCE(ec.contrato, c.contrato, '') as contrato,
 					COALESCE(ec.plano, c.plano, '') as plano,
 					ec.data_bloqueio as data_abertura,
@@ -3145,7 +3108,7 @@ func main() {
 						cidade = EXCLUDED.cidade,
 						plano = CASE WHEN NOT $9 THEN EXCLUDED.plano ELSE clientes.plano END,
 						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
-				`, c.RbxCode, c.Contract, c.Name, normalizeCityName(c.City), c.Plan, c.MonthlyFee, c.Status, c.Neighborhood, isMimoCandidate)
+				`, c.RbxCode, c.Contract, c.Name, strings.TrimSpace(c.City), c.Plan, c.MonthlyFee, c.Status, c.Neighborhood, isMimoCandidate)
 				if err != nil {
 					log.Printf("[DB ERROR insert cliente %s] %v", c.RbxCode, err)
 					_ = tx.Rollback(ctx)
