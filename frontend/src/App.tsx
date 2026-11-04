@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Sidebar, type MainMenuOption } from './components/Sidebar';
+import { CompanyHeader } from './components/CompanyHeader';
 import { CompanyDashboard } from './components/CompanyDashboard';
+import { CompanyAnnualDashboard } from './components/CompanyAnnualDashboard';
+import { AutenticacoesDashboard } from './components/AutenticacoesDashboard';
 import { ExecutiveHeader } from './components/ExecutiveHeader';
 import { KPICards } from './components/KPICards';
 import { CohortFunnel } from './components/CohortFunnel';
@@ -25,7 +28,9 @@ import {
   TrendingUp, 
   PackageCheck, 
   Layers,
-  Menu
+  Menu,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 
 export function App() {
@@ -33,6 +38,42 @@ export function App() {
   const [mainMenu, setMainMenu] = useState<MainMenuOption>('empresa');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // Módulo Minha Empresa (Sub-abas, competência e sincronização)
+  const [companyMonth, setCompanyMonth] = useState('2026-10');
+  const [companyView, setCompanyView] = useState<'operacional' | 'visao_anual'>('visao_anual');
+  const [isCompanySyncing, setIsCompanySyncing] = useState(false);
+  const [companySyncMessage, setCompanySyncMessage] = useState<string | null>(null);
+  const [companySyncTrigger, setCompanySyncTrigger] = useState(0);
+
+  const handleSyncCompany = async () => {
+    setIsCompanySyncing(true);
+    setCompanySyncMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/empresa/sync?month=${companyMonth}`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        setCompanySyncMessage('Sincronização com o RBX concluída com sucesso! Dados gravados no banco.');
+        setCompanySyncTrigger((prev) => prev + 1);
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setCompanySyncMessage(`Erro ao sincronizar: ${errJson.error || 'Falha na comunicação com o RBX'}`);
+      }
+    } catch (err: any) {
+      setCompanySyncMessage(`Erro na requisição: ${err.message || 'Falha de rede'}`);
+    } finally {
+      setIsCompanySyncing(false);
+      setTimeout(() => setCompanySyncMessage(null), 8000);
+    }
+  };
+
+  const handleSelectMainMenu = (menu: MainMenuOption) => {
+    setMainMenu(menu);
+    if (menu === 'empresa') {
+      setCompanyView('visao_anual');
+    }
+  };
 
   // Módulo de Clientes Recuperados (Sub-abas e filtros)
   const [selectedMonth, setSelectedMonth] = useState('2026-01');
@@ -154,7 +195,7 @@ export function App() {
       {/* 1. Menu Lateral (Sidebar) */}
       <Sidebar
         currentMenu={mainMenu}
-        onSelectMenu={setMainMenu}
+        onSelectMenu={handleSelectMainMenu}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed((prev) => !prev)}
         rbxStatus={rbxStatus}
@@ -165,31 +206,113 @@ export function App() {
       {/* 2. Área Principal de Conteúdo */}
       <div className="flex-1 flex flex-col min-w-0 min-h-screen">
         {/* Barra Superior Mobile (permite abrir o menu em telas pequenas) */}
-        <div className="lg:hidden bg-slate-950 text-white px-4 py-3 flex items-center justify-between no-print border-b border-slate-800">
+        <div className="lg:hidden bg-white text-slate-800 px-4 py-3 flex items-center justify-between no-print border-b border-slate-200">
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(true)}
-            className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+            className="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition cursor-pointer"
             title="Abrir Menu Lateral"
           >
             <Menu className="w-5 h-5" />
           </button>
           <div className="flex items-center space-x-2">
-            <span className="font-black text-sm tracking-tight text-white">EVAD</span>
-            <span className="text-slate-500">•</span>
-            <span className="text-xs font-semibold text-slate-300">
+            <span className="font-extrabold text-sm tracking-tight text-slate-900">EVAD</span>
+            <span className="text-slate-300">•</span>
+            <span className="text-xs font-semibold text-slate-600">
               {mainMenu === 'empresa' ? 'Minha Empresa' : 'Clientes Recuperados'}
             </span>
           </div>
-          <span className="text-[10px] font-bold bg-blue-600 px-2 py-0.5 rounded text-white uppercase">
+          <span className="text-[10px] font-bold bg-slate-900 px-2 py-0.5 rounded text-white uppercase">
             ISP
           </span>
         </div>
 
         {/* ------------------------------------------------------------- */}
-        {/* MÓDULO 1: MINHA EMPRESA (Tela totalmente nova)                */}
+        {/* MÓDULO 1: MINHA EMPRESA (Tela corporativa & operacional)      */}
         {/* ------------------------------------------------------------- */}
         {mainMenu === 'empresa' && (
+          <div className="flex-1 flex flex-col">
+            {/* Header Corporativo Minha Empresa - Idêntico ao ExecutiveHeader */}
+            <CompanyHeader
+              selectedMonth={companyMonth}
+              onMonthChange={setCompanyMonth}
+              onOpenRbxConfig={() => setIsRbxConfigOpen(true)}
+              rbxStatus={rbxStatus}
+              onSyncRbx={handleSyncCompany}
+              isSyncing={isCompanySyncing}
+              availableYears={competencias.availableYears}
+            />
+
+            {/* View Switcher Tabs (Navigation de Minha Empresa) - Idêntico ao menu de Clientes Recuperados */}
+            <nav className="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 no-print">
+              <div className="max-w-7xl mx-auto flex space-x-2 sm:space-x-6 text-xs overflow-x-auto no-scrollbar whitespace-nowrap">
+                <button
+                  type="button"
+                  onClick={() => setCompanyView('visao_anual')}
+                  className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
+                    companyView === 'visao_anual'
+                      ? 'border-slate-900 text-slate-900 font-semibold'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <TrendingUp className="h-4 w-4 text-emerald-600" />
+                  <span>Consolidado & Visão Anual (Saúde da Empresa)</span>
+                  <span className="bg-emerald-100 text-emerald-800 text-[9px] px-1.5 py-0.2 rounded-full font-black ml-1">
+                    2026
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCompanyView('operacional')}
+                  className={`py-3 border-b-2 font-medium flex items-center space-x-2 transition cursor-pointer select-none shrink-0 ${
+                    companyView === 'operacional'
+                      ? 'border-slate-900 text-slate-900 font-semibold'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <BarChart3 className="h-4 w-4 text-blue-600" />
+                  <span>Operacional Mensal (Instalações, Cancelados & Suspensos)</span>
+                </button>
+              </div>
+            </nav>
+
+            <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-6">
+              {companySyncMessage && (
+                <div className={`p-3 rounded-lg text-xs font-semibold flex items-center gap-2 transition animate-fade-in ${
+                  companySyncMessage.includes('Erro')
+                    ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                    : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                }`}>
+                  {companySyncMessage.includes('Erro') ? (
+                    <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  )}
+                  <span>{companySyncMessage}</span>
+                </div>
+              )}
+
+              {companyView === 'operacional' && (
+                <CompanyDashboard
+                  selectedMonth={companyMonth}
+                  syncTrigger={companySyncTrigger}
+                  rbxStatus={rbxStatus}
+                  onNavigateToRecuperados={() => setMainMenu('recuperados')}
+                />
+              )}
+
+              {companyView === 'visao_anual' && (
+                <CompanyAnnualDashboard initialYear={companyMonth.split('-')[0] || '2026'} />
+              )}
+            </main>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 2: BASE & AUTENTICAÇÕES RBX (Batimento Zabbix & Churn) */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'autenticacoes' && (
           <div className="flex-1 flex flex-col">
             <header className="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-8 py-3.5 no-print">
               <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -197,26 +320,23 @@ export function App() {
                   <div className="flex items-center space-x-2.5">
                     <h1 className="text-base font-bold text-slate-900 tracking-tight">EVAD</h1>
                     <span className="text-slate-300">|</span>
-                    <span className="text-sm font-medium text-slate-600">Minha Empresa</span>
+                    <span className="text-sm font-medium text-slate-600">Base & Autenticações RBX</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Ambiente corporativo centralizado do provedor de internet
+                    Auditoria de credenciais PPPoE e contratos para batimento com o Zabbix e cálculo de Churn
                   </p>
                 </div>
               </div>
             </header>
 
             <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-6">
-              <CompanyDashboard
-                onNavigateToRecuperados={() => setMainMenu('recuperados')}
-                rbxStatus={rbxStatus}
-              />
+              <AutenticacoesDashboard />
             </main>
           </div>
         )}
 
         {/* ------------------------------------------------------------- */}
-        {/* MÓDULO 2: CLIENTES RECUPERADOS (Tudo desenvolvido até agora)  */}
+        {/* MÓDULO 3: CLIENTES RECUPERADOS (Auditoria, KPIs & Hardware)   */}
         {/* ------------------------------------------------------------- */}
         {mainMenu === 'recuperados' && (
           <div className="flex-1 flex flex-col">

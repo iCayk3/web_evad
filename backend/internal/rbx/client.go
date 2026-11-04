@@ -1015,3 +1015,234 @@ func (c *Client) ConsultarAtendimentosRetirada(ctx context.Context) ([]Atendimen
 
 	return results, nil
 }
+
+// ConsultarContratosCanceladosGerais consulta todos os contratos cancelados no RBX para um intervalo de datas
+func (c *Client) ConsultarContratosCanceladosGerais(ctx context.Context, dataInicio, dataFim string) ([]ContractStatusResult, error) {
+	targetURL := c.EndpointURLForV1()
+	token := strings.TrimSpace(c.config.Token)
+	if targetURL == "" || token == "" {
+		return nil, fmt.Errorf("URL do RBX e Chave de Integração são obrigatórias")
+	}
+
+	filtro := fmt.Sprintf("Situacao_Codigo = 'C' AND DataUltimaOperacao >= '%s' AND DataUltimaOperacao <= '%s'", dataInicio, dataFim)
+
+	payload := map[string]interface{}{
+		"ConsultaContratos": map[string]interface{}{
+			"Autenticacao": map[string]string{
+				"ChaveIntegracao": token,
+			},
+			"Filtro": filtro,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao montar payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar requisição: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json, */*")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao chamar API do RBX: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao ler resposta do RBX: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RBX retornou HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	type rawContract map[string]interface{}
+	type rbxResponse struct {
+		Status interface{}   `json:"status"`
+		Result []rawContract `json:"result"`
+	}
+
+	var parsed rbxResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, nil // Retorna vazio se não tiver registros
+	}
+
+	toStr := func(rc rawContract, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := rc[k]; ok && v != nil {
+				return strings.TrimSpace(fmt.Sprintf("%v", v))
+			}
+		}
+		return ""
+	}
+
+	toFloat := func(rc rawContract, keys ...string) float64 {
+		s := toStr(rc, keys...)
+		if s == "" {
+			return 0
+		}
+		s = strings.ReplaceAll(s, "R$", "")
+		s = strings.ReplaceAll(s, " ", "")
+		s = strings.ReplaceAll(s, ",", ".")
+		f, _ := strconv.ParseFloat(s, 64)
+		return f
+	}
+
+	results := make([]ContractStatusResult, 0, len(parsed.Result))
+	for _, rc := range parsed.Result {
+		contractNum := toStr(rc, "Numero", "codigo_contrato", "Contrato_Numero")
+		if contractNum == "" {
+			continue
+		}
+
+		clientCode := toStr(rc, "Cliente_Codigo", "codigo_cliente")
+		clientName := toStr(rc, "Cliente_Nome", "nome_cliente", "nome")
+		planDesc := toStr(rc, "Plano_Descricao", "descricao_pacote", "plano")
+		monthlyFee := toFloat(rc, "ValorLiquido", "ValorBruto", "valor", "Plano_Valor")
+		cancellationReason := toStr(rc, "Cancelamento_Motivo", "motivo_cancelamento")
+		city := toStr(rc, "EnderecoInstalacao_Cidade", "EnderecoCobranca_Cidade", "cidade")
+		neighborhood := toStr(rc, "EnderecoInstalacao_Bairro", "EnderecoCobranca_Bairro", "bairro", "Bairro")
+		district := toStr(rc, "EnderecoInstalacao_Distrito", "EnderecoCobranca_Distrito", "distrito", "Distrito")
+
+		lastOpStr := toStr(rc, "DataUltimaOperacao", "data_ultima_operacao")
+		var lastOpDate *time.Time
+		if lastOpStr != "" {
+			formats := []string{"2006-01-02 15:04:05", "2006-01-02", "02/01/2006 15:04:05", "02/01/2006"}
+			for _, f := range formats {
+				if t, err := time.Parse(f, lastOpStr); err == nil {
+					lastOpDate = &t
+					break
+				}
+			}
+		}
+
+		results = append(results, ContractStatusResult{
+			ContractCode:       contractNum,
+			ClientCode:         clientCode,
+			ClientName:         clientName,
+			StatusCode:         "C",
+			StatusText:         "Cancelado",
+			Category:           "churned",
+			Plan:               planDesc,
+			MonthlyFee:         monthlyFee,
+			City:               city,
+			Neighborhood:       neighborhood,
+			District:           district,
+			LastOperationDate:  lastOpDate,
+			CancellationReason: cancellationReason,
+		})
+	}
+
+	return results, nil
+}
+
+// ConsultarAtendimentosFaixa busca atendimentos em um intervalo de números de OS no RBX
+func (c *Client) ConsultarAtendimentosFaixa(ctx context.Context, minNumero, maxNumero int) ([]AtendimentoRetiradaResult, error) {
+	targetURL := c.EndpointURLForV1()
+	token := strings.TrimSpace(c.config.Token)
+	if targetURL == "" || token == "" {
+		return nil, fmt.Errorf("integração RBX não configurada")
+	}
+
+	filtro := fmt.Sprintf("Numero >= %d AND Numero <= %d", minNumero, maxNumero)
+
+	payload := map[string]interface{}{
+		"ConsultaAtendimentos": map[string]interface{}{
+			"Autenticacao": map[string]string{
+				"ChaveIntegracao": token,
+			},
+			"Filtro": filtro,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao montar payload: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("erro ao criar requisição: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json, */*")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao chamar API do RBX: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao ler resposta do RBX: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RBX retornou HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	type rawAtend map[string]interface{}
+	var parsed struct {
+		Result []rawAtend `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, nil
+	}
+
+	toStr := func(ra rawAtend, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := ra[k]; ok && v != nil {
+				return strings.TrimSpace(fmt.Sprintf("%v", v))
+			}
+		}
+		return ""
+	}
+
+	parseDate := func(s string) *time.Time {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		formats := []string{"2006-01-02 15:04:05", "2006-01-02", "02/01/2006 15:04:05", "02/01/2006"}
+		for _, f := range formats {
+			if t, err := time.Parse(f, s); err == nil {
+				return &t
+			}
+		}
+		return nil
+	}
+
+	var results []AtendimentoRetiradaResult
+	for _, ra := range parsed.Result {
+		num := toStr(ra, "Numero")
+		if num == "" {
+			continue
+		}
+		cliCode := toStr(ra, "CodigoCliente", "Cliente")
+		cliCodeClean := strings.ReplaceAll(strings.ReplaceAll(cliCode, ".", ""), ",", "")
+
+		results = append(results, AtendimentoRetiradaResult{
+			Numero:               num,
+			Protocolo:            toStr(ra, "Protocolo"),
+			CodigoCliente:        cliCodeClean,
+			AberturaDataHora:     parseDate(toStr(ra, "Abertura_DataHora")),
+			EncerramentoDataHora: parseDate(toStr(ra, "Encerramento_DataHora")),
+			SituacaoOS:           toStr(ra, "Situacao_OS"),
+			Topico:               toStr(ra, "Topico"),
+			Assunto:              toStr(ra, "Assunto"),
+			Solucao:              toStr(ra, "Solucao"),
+			Causa:                toStr(ra, "Causa"),
+			UsuarioAbertura:      toStr(ra, "Abertura_Usuario"),
+			Tipo:                 toStr(ra, "Tipo"),
+		})
+	}
+
+	return results, nil
+}

@@ -73,3 +73,4 @@ Antes de concluir qualquer tarefa e enviar para produção (`origin/main`), o ag
 2. `npm --prefix frontend run build` ➔ 0 erros de compilação TypeScript e Vite no frontend.
 3. Teste funcional dos endpoints da API (`/api/analytics/cohort`, `/api/analytics/monthly`, `/api/analytics/annual`, `/api/equipamentos/retiradas`, `/api/equipamentos/annual`).
 4. Verificação de que nenhuma tela existente parou de renderizar ou perdeu dados.
+5. `docker compose up -d --build` ➔ **Obrigatório:** Reconstruir e atualizar os containers Docker locais (`evad-backend`, `evad-frontend`), garantindo que o sistema rodando na máquina do usuário reflita imediatamente as alterações.

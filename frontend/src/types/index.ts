@@ -253,3 +253,112 @@ export interface EquipamentoAnnualResponse {
   byCause: EquipamentoAnnualCauseStats[];
   availableYears: string[];
 }
+
+// =========================================================================
+// MÓDULO MINHA EMPRESA (Inteligência Operacional RBX)
+// =========================================================================
+
+export interface EmpresaIndicadoresResponse {
+  mesCompetencia: string;
+  totalInstalacoes: number;
+  instalacoesSucesso: number;
+  totalCancelamentos: number;
+  totalBloqueados: number;
+  totalSuspensos: number;
+  percentualSuspensos?: number;
+  mrrSuspensos?: number;
+  totalInadimplentes: number;
+  atualizadoEm?: string | null;
+}
+
+export interface InstalacaoItem {
+  numero: string;
+  protocolo: string;
+  codigoCliente: string;
+  nomeCliente: string;
+  contrato?: string;
+  dataAbertura: string | null;
+  dataEncerramento: string | null;
+  situacaoOS: string;
+  topico: string;
+  causa: string;
+  assunto: string;
+  solucao: string;
+  usuarioAbertura: string;
+  instaladoComSucesso: boolean;
+  cidade: string;
+  bairro: string;
+}
+
+export interface CanceladoItem {
+  numeroContrato: string;
+  codigoCliente: string;
+  nomeCliente: string;
+  dataCancelamento: string | null;
+  motivoCancelamento: string;
+  plano: string;
+  valorMensalidade: number;
+  cidade: string;
+  bairro: string;
+}
+
+export interface InadimplenteItem {
+  contrato: string;
+  codigoRbx: string;
+  nome: string;
+  cidade: string;
+  bairro: string;
+  plano: string;
+  valorMensalidade: number;
+  statusDesfecho: string;
+  statusRbxCodigo: string;
+  statusRbxDescricao: string;
+  diasVencido: number;
+}
+
+export interface VisaoAnualMes {
+  mes: string;
+  mesLabel: string;
+  totalInstalacoes: number;
+  instalacoesSucesso: number;
+  totalCancelamentos: number;
+  saldoLiquido: number;
+  totalSuspensos: number;
+  baseAtiva: number;
+  churnRate: number;
+  mrrCancelado: number;
+  mrrSuspensos?: number;
+}
+
+export interface VisaoAnualKpis {
+  baseAtual: number;
+  clientesUnicosAtuais: number;
+  saldoLiquidoAnual: number;
+  totalInstalacoesAnual: number;
+  mediaMensalInstalacoes: number;
+  totalCancelamentosAnual: number;
+  mediaMensalCancelamentos: number;
+  churnMedioAnual: number;
+  totalSuspensosAtual: number;
+  totalSuspensosAnual?: number;
+  mrrSuspensosTotal?: number;
+  mrrCanceladoTotal: number;
+  taxaRetencaoAnual: number;
+}
+
+export interface VisaoAnualRankingItem {
+  cidade?: string;
+  motivo?: string;
+  total: number;
+  percentual: number;
+}
+
+export interface EmpresaVisaoAnualResponse {
+  ano: string;
+  kpis: VisaoAnualKpis;
+  meses: VisaoAnualMes[];
+  topCidadesInstalacoes: VisaoAnualRankingItem[];
+  topCidadesSuspensos?: VisaoAnualRankingItem[];
+  topCidadesCancelamentos?: VisaoAnualRankingItem[];
+  topMotivosCancelamento: VisaoAnualRankingItem[];
+}

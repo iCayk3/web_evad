@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 
@@ -255,6 +256,216 @@ func initDB() {
 		WHERE UPPER(motivo_cancelamento) LIKE '%SEM USO%'
 		  AND status_rbx_codigo IN ('C', 'N')
 		  AND status_desfecho != 'churned';
+
+		-- Módulo Minha Empresa: Tabelas Operacionais do RBX
+		CREATE TABLE IF NOT EXISTS rbx_atendimentos_instalacoes (
+			numero VARCHAR(50) PRIMARY KEY,
+			protocolo VARCHAR(50),
+			codigo_cliente VARCHAR(50),
+			nome_cliente VARCHAR(255),
+			contrato VARCHAR(50),
+			mes_competencia VARCHAR(7) NOT NULL,
+			data_abertura TIMESTAMP WITH TIME ZONE,
+			data_encerramento TIMESTAMP WITH TIME ZONE,
+			situacao_os VARCHAR(50),
+			topico VARCHAR(255),
+			causa VARCHAR(255),
+			assunto TEXT,
+			solucao TEXT,
+			usuario_abertura VARCHAR(100),
+			instalado_com_sucesso BOOLEAN DEFAULT false,
+			cidade VARCHAR(100),
+			bairro VARCHAR(100),
+			sincronizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_rbx_inst_competencia ON rbx_atendimentos_instalacoes(mes_competencia);
+		CREATE INDEX IF NOT EXISTS idx_rbx_inst_sucesso ON rbx_atendimentos_instalacoes(instalado_com_sucesso);
+		CREATE INDEX IF NOT EXISTS idx_rbx_inst_cliente ON rbx_atendimentos_instalacoes(codigo_cliente);
+
+		CREATE TABLE IF NOT EXISTS rbx_contratos_cancelados (
+			numero_contrato VARCHAR(50) PRIMARY KEY,
+			codigo_cliente VARCHAR(50),
+			nome_cliente VARCHAR(255),
+			mes_competencia VARCHAR(7) NOT NULL,
+			data_cancelamento TIMESTAMP WITH TIME ZONE,
+			motivo_cancelamento TEXT,
+			plano VARCHAR(150),
+			valor_mensalidade NUMERIC(10, 2) DEFAULT 0.00,
+			cidade VARCHAR(100),
+			bairro VARCHAR(100),
+			sincronizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_rbx_canc_competencia ON rbx_contratos_cancelados(mes_competencia);
+		CREATE INDEX IF NOT EXISTS idx_rbx_canc_cliente ON rbx_contratos_cancelados(codigo_cliente);
+
+		CREATE TABLE IF NOT EXISTS rbx_metricas_mensais (
+			mes_competencia VARCHAR(7) PRIMARY KEY,
+			total_instalacoes INT DEFAULT 0,
+			instalacoes_sucesso INT DEFAULT 0,
+			total_cancelamentos INT DEFAULT 0,
+			total_bloqueados INT DEFAULT 0,
+			total_suspensos INT DEFAULT 0,
+			total_inadimplentes INT DEFAULT 0,
+			atualizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+
+		-- Módulo Auditoria de Autenticações & Base Histórica RBX
+		CREATE TABLE IF NOT EXISTS rbx_autenticacoes (
+			id_autenticacao VARCHAR(50) PRIMARY KEY,
+			codigo_cliente VARCHAR(50),
+			nome_cliente VARCHAR(255),
+			numero_contrato VARCHAR(50),
+			nas VARCHAR(100),
+			porta VARCHAR(100),
+			usuario VARCHAR(150),
+			mac VARCHAR(50),
+			observacao TEXT,
+			eh_central_assinante BOOLEAN DEFAULT false,
+			data_assinatura DATE,
+			data_inicio DATE,
+			situacao_codigo VARCHAR(10),
+			situacao_descricao VARCHAR(50),
+			data_ultima_operacao DATE,
+			criado_ate_janeiro_2026 BOOLEAN DEFAULT false,
+			sincronizado_em TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_contrato ON rbx_autenticacoes(numero_contrato);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_usuario ON rbx_autenticacoes(usuario);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_central ON rbx_autenticacoes(eh_central_assinante);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_jan ON rbx_autenticacoes(criado_ate_janeiro_2026);
+
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_janeiro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS origem_upgrade BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS contrato_anterior VARCHAR(50) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_janeiro VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS grupo_cliente VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS eh_grupo_excluido BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_fevereiro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_fevereiro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_fevereiro VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_marco_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_marco_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_marco VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_abril_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_abril_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_abril VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_maio_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_maio_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_maio VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_junho_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_junho_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_junho VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_julho_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_julho_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_julho VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_agosto_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_agosto_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_agosto VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_setembro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_setembro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_setembro VARCHAR(100) DEFAULT '';
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS criado_ate_outubro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS ativo_em_outubro_2026 BOOLEAN DEFAULT false;
+		ALTER TABLE rbx_autenticacoes ADD COLUMN IF NOT EXISTS situacao_em_outubro VARCHAR(100) DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_jan ON rbx_autenticacoes(ativo_em_janeiro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_upgrade ON rbx_autenticacoes(origem_upgrade);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_grp_excluido ON rbx_autenticacoes(eh_grupo_excluido);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_fev ON rbx_autenticacoes(criado_ate_fevereiro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_fev ON rbx_autenticacoes(ativo_em_fevereiro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_mar ON rbx_autenticacoes(criado_ate_marco_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_mar ON rbx_autenticacoes(ativo_em_marco_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_abr ON rbx_autenticacoes(criado_ate_abril_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_abr ON rbx_autenticacoes(ativo_em_abril_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_mai ON rbx_autenticacoes(criado_ate_maio_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_mai ON rbx_autenticacoes(ativo_em_maio_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_jun ON rbx_autenticacoes(criado_ate_junho_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_jun ON rbx_autenticacoes(ativo_em_junho_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_jul ON rbx_autenticacoes(criado_ate_julho_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_jul ON rbx_autenticacoes(ativo_em_julho_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ago ON rbx_autenticacoes(criado_ate_agosto_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_ago ON rbx_autenticacoes(ativo_em_agosto_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_set ON rbx_autenticacoes(criado_ate_setembro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_set ON rbx_autenticacoes(ativo_em_setembro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_out ON rbx_autenticacoes(criado_ate_outubro_2026);
+		CREATE INDEX IF NOT EXISTS idx_rbx_auth_ativo_out ON rbx_autenticacoes(ativo_em_outubro_2026);
+
+		-- Remove contratos cancelados de TV (adicionais normalmente zerados) e motivos desconsiderados
+		DELETE FROM rbx_contratos_cancelados
+		WHERE motivo_cancelamento ILIKE '%MUD%TITULARIDADE%'
+		   OR motivo_cancelamento ILIKE '%AJUSTE T%CNICO%'
+		   OR motivo_cancelamento ILIKE '%CONTRATO TEMPOR%RIO%'
+		   OR motivo_cancelamento ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+		   OR motivo_cancelamento ILIKE '%ERRO%GERA%O%CONTRATO%'
+		   OR motivo_cancelamento ILIKE '%CANCELAMENTO%MIGRA%'
+		   OR motivo_cancelamento ILIKE '%N%O PAGOU A TAXA%'
+		   OR motivo_cancelamento ILIKE '%NAO PAGOU A TAXA%'
+		   OR motivo_cancelamento ILIKE '%INVIA%'
+		   OR plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+		   OR plano ILIKE '%+ TV%'
+		   OR plano ILIKE '%+TV%'
+		   OR plano ILIKE '%TELEVIS%'
+		   OR plano ILIKE '%IPTV%';
+
+		-- Remove atendimentos de instalação gerados/abertos incorretamente (ex: suporte por lentidão ou reparo)
+		DELETE FROM rbx_atendimentos_instalacoes
+		WHERE solucao ILIKE '%aberto incorretamente%'
+		   OR solucao ILIKE '%aberta incorretamente%'
+		   OR solucao ILIKE '%aberto indevidamente%'
+		   OR solucao ILIKE '%aberta indevidamente%'
+		   OR solucao ILIKE '%abertura errada%'
+		   OR solucao ILIKE '%abertura incorreta%'
+		   OR solucao ILIKE '%abertura indevida%'
+		   OR solucao ILIKE '%gerad%incorret%'
+		   OR solucao ILIKE '%gerad%errad%'
+		   OR solucao ILIKE '%gerad%indevid%'
+		   OR solucao ILIKE '%como lentid%'
+		   OR solucao ILIKE '%como reparo%'
+		   OR solucao ILIKE '%como suporte%'
+		   OR solucao ILIKE '%fluxo incorreto%'
+		   OR solucao ILIKE '%n%o era instala%'
+		   OR solucao ILIKE '%aberto errado%'
+		   OR solucao ILIKE '%aberta errada%'
+		   OR solucao ILIKE '%aberto por engano%'
+		   OR solucao ILIKE '%aberta por engano%'
+		   OR solucao ILIKE '%nao teve viabilida%'
+		   OR solucao ILIKE '%não teve viabilida%'
+		   OR solucao ILIKE '%sem viabilidade%'
+		   OR solucao ILIKE '%cto muito longe%'
+		   OR solucao ILIKE '%cto longe%'
+		   OR solucao ILIKE '%inviabilidade técnica%'
+		   OR solucao ILIKE '%inviabilidade tecnica%'
+		   OR solucao ILIKE '%não foi possível instalar%'
+		   OR solucao ILIKE '%nao foi possivel instalar%'
+		   OR solucao ILIKE '%não foi instalad%'
+		   OR solucao ILIKE '%nao foi instalad%'
+		   OR solucao ILIKE '%não instalad%'
+		   OR solucao ILIKE '%nao instalad%'
+		   OR solucao ILIKE '%pós venda%'
+		   OR solucao ILIKE '%pos venda%'
+		   OR assunto ILIKE '%verificar com o cliente se ele esta%satisfeito%';
+
+		-- Atualiza os totais consolidados de instalações, cancelamentos e suspensos em rbx_metricas_mensais
+		UPDATE rbx_metricas_mensais m
+		SET total_cancelamentos = COALESCE((
+			SELECT COUNT(*) FROM rbx_contratos_cancelados c
+			WHERE c.mes_competencia = m.mes_competencia
+		), 0),
+		total_instalacoes = COALESCE((
+			SELECT COUNT(*) FROM rbx_atendimentos_instalacoes i
+			WHERE i.mes_competencia = m.mes_competencia
+		), 0),
+		instalacoes_sucesso = COALESCE((
+			SELECT COUNT(*) FROM rbx_atendimentos_instalacoes i
+			WHERE i.mes_competencia = m.mes_competencia AND i.instalado_com_sucesso = true
+		), 0),
+		total_suspensos = COALESCE((
+			SELECT COUNT(CASE WHEN e.status_desfecho = 'suspended' THEN 1 END)
+			FROM eventos_bloqueio e
+			WHERE e.mes_competencia = m.mes_competencia 
+			  AND NOT e.eh_mimo 
+			  AND e.status_desfecho IN ('returned', 'churned', 'suspended', 'blocked')
+			  AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL)
+		), 0);
 	`)
 }
 
@@ -728,6 +939,44 @@ func startBackgroundSyncScheduler() {
 			} else {
 				log.Printf("[Scheduler SUCESSO] %s", res.Message)
 			}
+
+			// Rotina Automática em Produção: Sincronização operacional e base de autenticações
+			currentMonth := time.Now().Format("2006-01")
+			ctxOp, cancelOp := context.WithTimeout(context.Background(), 20*time.Minute)
+			var rbxURL, rbxToken, rbxVersion string
+			errCfg := dbPool.QueryRow(ctxOp, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+			if errCfg == nil && strings.TrimSpace(rbxURL) != "" && strings.TrimSpace(rbxToken) != "" {
+				client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
+
+				// 1. Sincroniza dados operacionais da empresa (Instalações, Cancelamentos, Bloqueados)
+				resOp, errOp := syncRbxOperacionalEmpresa(ctxOp, client, currentMonth)
+				if errOp != nil {
+					log.Printf("[Scheduler ERROR] Falha na sincronização operacional (%s): %v", currentMonth, errOp)
+				} else {
+					log.Printf("[Scheduler SUCESSO] Dados operacionais de %s sincronizados automaticamente (%d inst, %d canc).",
+						currentMonth, resOp["instalacoesSucesso"], resOp["totalCancelamentos"])
+				}
+
+				// Nos primeiros 5 dias do mês, reconcilia também o mês anterior para capturar OSs concluídas na virada
+				if time.Now().Day() <= 5 {
+					prevMonth := time.Now().AddDate(0, -1, 0).Format("2006-01")
+					resPrev, errPrev := syncRbxOperacionalEmpresa(ctxOp, client, prevMonth)
+					if errPrev == nil {
+						log.Printf("[Scheduler SUCESSO] Reconciliação do mês anterior (%s) concluída (%d inst, %d canc).",
+							prevMonth, resPrev["instalacoesSucesso"], resPrev["totalCancelamentos"])
+					}
+				}
+
+				// 2. Sincroniza base de autenticações RBX (PPPoE / Grafana)
+				resAuth, errAuth := syncRbxAutenticacoesBase(ctxOp, client)
+				if errAuth != nil {
+					log.Printf("[Scheduler ERROR] Falha na sincronização da base de autenticações: %v", errAuth)
+				} else {
+					log.Printf("[Scheduler SUCESSO] Base de autenticações RBX sincronizada automaticamente (%d total, %d PPPoE).",
+						resAuth["totalAutenticacoes"], resAuth["pppoeTotal"])
+				}
+			}
+			cancelOp()
 
 			time.Sleep(1 * time.Minute)
 		}
@@ -1799,6 +2048,1373 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 	return count, nil
 }
 
+var reTvPlan = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)|televis[aã]o|iptv`)
+
+// ehContratoTvCancelado verifica se o contrato possui TV no nome do plano ou produto (SVA normalmente zerado)
+func ehContratoTvCancelado(plano string) bool {
+	if strings.TrimSpace(plano) == "" {
+		return false
+	}
+	return reTvPlan.MatchString(plano)
+}
+
+// isExcludedContratoCancelamento verifica se o cancelamento deve ser desconsiderado na contagem geral
+func isExcludedContratoCancelamento(motivo, plano string) bool {
+	if isExcludedMotivoCancelamento(motivo) {
+		return true
+	}
+	if ehContratoTvCancelado(plano) {
+		return true
+	}
+	return false
+}
+
+// isExcludedMotivoCancelamento verifica se o motivo de cancelamento deve ser desconsiderado na contagem
+func isExcludedMotivoCancelamento(motivo string) bool {
+	m := strings.ToUpper(strings.TrimSpace(motivo))
+	if strings.Contains(m, "MUD. DE TITULARIDADE") || strings.Contains(m, "MUDANÇA DE TITULARIDADE") || strings.Contains(m, "MUDANCA DE TITULARIDADE") ||
+		strings.Contains(m, "AJUSTE TÉCNICO") || strings.Contains(m, "AJUSTE TECNICO") ||
+		strings.Contains(m, "CONTRATO TEMPORÁRIO") || strings.Contains(m, "CONTRATO TEMPORARIO") ||
+		strings.Contains(m, "PEDIDO INSTALAÇÃO CANCELADO") || strings.Contains(m, "PEDIDO INSTALACAO CANCELADO") ||
+		strings.Contains(m, "ERRO NA GERAÇÃO DO CONTRATO") || strings.Contains(m, "ERRO NA GERACAO DO CONTRATO") ||
+		strings.Contains(m, "CANCELAMENTO MIGRAÇÃO") || strings.Contains(m, "CANCELAMENTO MIGRACAO") ||
+		strings.Contains(m, "NÃO PAGOU A TAXA") || strings.Contains(m, "NAO PAGOU A TAXA") ||
+		strings.Contains(m, "INVIABILIDADE") || strings.Contains(m, "INVIANILIDADE") || strings.Contains(m, "INVIA") {
+		return true
+	}
+	return false
+}
+
+// syncRbxOperacionalEmpresa sincroniza e persiste atendimentos de instalação, cancelamentos gerais e inadimplência do RBX
+func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month string) (map[string]interface{}, error) {
+	if dbPool == nil {
+		return nil, fmt.Errorf("banco de dados não disponível")
+	}
+	if month == "" {
+		month = "2026-01"
+	}
+
+	parts := strings.Split(month, "-")
+	if len(parts) < 2 {
+		parts = []string{"2026", "01"}
+	}
+	yearStr := parts[0]
+	monthStr := parts[1]
+	yearInt, _ := strconv.Atoi(yearStr)
+	monthInt, _ := strconv.Atoi(monthStr)
+
+	// Intervalo de datas da competência
+	firstDay := time.Date(yearInt, time.Month(monthInt), 1, 0, 0, 0, 0, time.UTC)
+	lastDay := firstDay.AddDate(0, 1, -1)
+	startDate := firstDay.Format("2006-01-02")
+	endDate := lastDay.Format("2006-01-02")
+
+	// 1. Sincronizar Cancelamentos Gerais do RBX (Base Total via ConsultaContratos Situacao_Codigo = 'C')
+	cancelados, err := client.ConsultarContratosCanceladosGerais(ctx, startDate, endDate)
+	canceladosCount := 0
+	if err == nil {
+		for _, c := range cancelados {
+			if isExcludedContratoCancelamento(c.CancellationReason, c.Plan) {
+				continue
+			}
+			_, errIns := dbPool.Exec(ctx, `
+				INSERT INTO rbx_contratos_cancelados (
+					numero_contrato, codigo_cliente, nome_cliente, mes_competencia,
+					data_cancelamento, motivo_cancelamento, plano, valor_mensalidade,
+					cidade, bairro, sincronizado_em
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+				ON CONFLICT (numero_contrato) DO UPDATE SET
+					codigo_cliente = EXCLUDED.codigo_cliente,
+					nome_cliente = EXCLUDED.nome_cliente,
+					data_cancelamento = EXCLUDED.data_cancelamento,
+					motivo_cancelamento = EXCLUDED.motivo_cancelamento,
+					plano = EXCLUDED.plano,
+					valor_mensalidade = EXCLUDED.valor_mensalidade,
+					cidade = EXCLUDED.cidade,
+					bairro = EXCLUDED.bairro,
+					sincronizado_em = CURRENT_TIMESTAMP
+			`, c.ContractCode, c.ClientCode, c.ClientName, month,
+				c.LastOperationDate, c.CancellationReason, c.Plan, c.MonthlyFee,
+				c.City, c.Neighborhood)
+			if errIns == nil {
+				canceladosCount++
+			}
+		}
+
+		// Garante a remoção de contratos com motivos desconsiderados ou TV existentes na competência
+		_, _ = dbPool.Exec(ctx, `
+			DELETE FROM rbx_contratos_cancelados
+			WHERE mes_competencia = $1
+			  AND (
+				motivo_cancelamento ILIKE '%MUD%TITULARIDADE%'
+				OR motivo_cancelamento ILIKE '%AJUSTE T%CNICO%'
+				OR motivo_cancelamento ILIKE '%CONTRATO TEMPOR%RIO%'
+				OR motivo_cancelamento ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+				OR motivo_cancelamento ILIKE '%ERRO%GERA%O%CONTRATO%'
+				OR motivo_cancelamento ILIKE '%CANCELAMENTO%MIGRA%'
+				OR motivo_cancelamento ILIKE '%N%O PAGOU A TAXA%'
+				OR motivo_cancelamento ILIKE '%NAO PAGOU A TAXA%'
+				OR motivo_cancelamento ILIKE '%INVIA%'
+				OR plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+				OR plano ILIKE '%+ TV%'
+				OR plano ILIKE '%+TV%'
+				OR plano ILIKE '%TELEVIS%'
+				OR plano ILIKE '%IPTV%'
+			  )
+		`, month)
+	} else {
+		log.Printf("[RBX OPERACIONAL] Erro ao buscar cancelamentos gerais: %v", err)
+	}
+
+	// 2. Sincronizar Atendimentos de Instalação do RBX (Opção 1 + Trecho de Nova Instalação Concluída)
+	// Para Janeiro de 2026, a faixa sequencial validada é 53000 a 56500
+	minNum := 53000
+	maxNum := 56500
+	if month != "2026-01" {
+		minNum = 50000
+		maxNum = 120000
+
+		// Faixa sequencial inteligente baseada nos atendimentos gravados
+		var prevMax int64
+		errPrev := dbPool.QueryRow(ctx, "SELECT COALESCE(MAX(numero::bigint), 0) FROM rbx_atendimentos_instalacoes WHERE mes_competencia < $1", month).Scan(&prevMax)
+		if errPrev == nil && prevMax > 10000 {
+			minNum = int(prevMax) - 500
+		}
+		var currMax int64
+		errCurr := dbPool.QueryRow(ctx, "SELECT COALESCE(MAX(numero::bigint), 0) FROM rbx_atendimentos_instalacoes WHERE mes_competencia = $1", month).Scan(&currMax)
+		if errCurr == nil && currMax > int64(minNum) {
+			maxNum = int(currMax) + 20000
+		} else {
+			maxNum = minNum + 25000
+		}
+	}
+
+	atends, err := client.ConsultarAtendimentosFaixa(ctx, minNum, maxNum)
+	instalacoesTotal := 0
+	instalacoesSucesso := 0
+	if err == nil {
+		reContrato := regexp.MustCompile(`(?i)Contrato:\s*(\d+)`)
+		reTopicoInstalacao := regexp.MustCompile(`(?i)(?:t[oó]pico:\s*\([^\)]*instala[cç][aã]o[^\)]*\)|instala[cç][aã]o\s+[a-z]{2,4}\b)`)
+		reCausaSucesso := regexp.MustCompile(`(?i)(?:instalado\s+com\s+sucesso|instala[cç][aã]o\s+conclu[ií]da)`)
+
+		type itemInstalacao struct {
+			at       rbx.AtendimentoRetiradaResult
+			contrato string
+			sucesso  bool
+		}
+		var matched []itemInstalacao
+		var clientCodesToEnrich []string
+		seenCodes := make(map[string]bool)
+
+		for _, at := range atends {
+			// Regra de negócio estrita: A competência do atendimento é definida pela DATA DE ABERTURA.
+			// Atendimentos iniciados no mês (mesmo que concluídos no mês seguinte) são contabilizados.
+			// Atendimentos iniciados em meses anteriores (ex: Dezembro) e concluídos no mês são descartados.
+			isAbert := at.AberturaDataHora != nil && at.AberturaDataHora.Format("2006-01") == month
+			if !isAbert {
+				continue
+			}
+
+			fullTextLower := strings.ToLower(at.Assunto + " " + at.Solucao + " " + at.Topico + " " + at.Causa)
+
+			// TRECHO 1:
+			// /# Tópico:(Instalação) Instalação #/
+			// /# Causa:(Instalação) Instalado com Sucesso #/
+			hasT1_Topico := strings.Contains(fullTextLower, "(instalação) instalação") ||
+				strings.Contains(fullTextLower, "(instalacao) instalacao") ||
+				strings.Contains(fullTextLower, "tópico:(instalação)") ||
+				strings.Contains(fullTextLower, "topico:(instalacao)") ||
+				strings.Contains(fullTextLower, "tópico: (instalação)") ||
+				strings.Contains(fullTextLower, "topico: (instalacao)")
+
+			hasT1_Causa := strings.Contains(fullTextLower, "(instalação) instalado com sucesso") ||
+				strings.Contains(fullTextLower, "(instalacao) instalado com sucesso") ||
+				strings.Contains(fullTextLower, "instalado com sucesso")
+			isTrecho1 := hasT1_Topico && hasT1_Causa
+
+			// TRECHO 2 (Solicitado pelo usuário):
+			// /# Tópico:(Nova instalação) Iniciar processo de instalação #/
+			// /# Causa:(Instalação Concluida) Instalação Concluida #/
+			hasT2_Topico := strings.Contains(fullTextLower, "(nova instalação) iniciar processo de instalação") ||
+				strings.Contains(fullTextLower, "(nova instalacao) iniciar processo de instalacao") ||
+				strings.Contains(fullTextLower, "nova instalação") ||
+				strings.Contains(fullTextLower, "nova instalacao")
+
+			hasT2_Causa := strings.Contains(fullTextLower, "(instalação concluida) instalação concluida") ||
+				strings.Contains(fullTextLower, "(instalação concluída) instalação concluída") ||
+				strings.Contains(fullTextLower, "instalação concluida") ||
+				strings.Contains(fullTextLower, "instalação concluída") ||
+				strings.Contains(fullTextLower, "instalacao concluida")
+			isTrecho2 := hasT2_Topico && hasT2_Causa
+
+			// TRECHO 3 (Atualização Outubro - Generalizado com siglas de cidades MGB, PMV, QT, SJP, etc.):
+			// /# Tópico:(Instalação <SIGLA>) Instalação <SIGLA> #/
+			// /# Causa:(Instalado Com Sucesso) Instalado com Sucesso #/
+			hasT3_Topico := reTopicoInstalacao.MatchString(fullTextLower)
+			hasT3_Causa := reCausaSucesso.MatchString(fullTextLower)
+			isTrecho3 := hasT3_Topico && hasT3_Causa
+
+			if !isTrecho1 && !isTrecho2 && !isTrecho3 {
+				continue
+			}
+
+			// Ignorar chamados abertos incorretamente como instalação (ex: suporte por lentidão ou reparo aberto por engano no fluxo de instalação)
+			solucaoLower := strings.ToLower(at.Solucao)
+			if strings.Contains(solucaoLower, "aberto incorretamente") ||
+				strings.Contains(solucaoLower, "aberta incorretamente") ||
+				strings.Contains(solucaoLower, "aberto indevidamente") ||
+				strings.Contains(solucaoLower, "aberta indevidamente") ||
+				strings.Contains(solucaoLower, "abertura errada") ||
+				strings.Contains(solucaoLower, "abertura incorreta") ||
+				strings.Contains(solucaoLower, "abertura indevida") ||
+				strings.Contains(solucaoLower, "fluxo incorreto") ||
+				strings.Contains(solucaoLower, "não era instalação") ||
+				strings.Contains(solucaoLower, "nao era instalacao") ||
+				strings.Contains(solucaoLower, "não era instalacao") ||
+				strings.Contains(solucaoLower, "nao era instalação") ||
+				strings.Contains(solucaoLower, "aberto errado") ||
+				strings.Contains(solucaoLower, "aberta errada") ||
+				strings.Contains(solucaoLower, "aberto por engano") ||
+				strings.Contains(solucaoLower, "aberta por engano") ||
+				strings.Contains(solucaoLower, "gerado incorretamente") ||
+				strings.Contains(solucaoLower, "gerada incorretamente") ||
+				strings.Contains(solucaoLower, "gerado indevidamente") ||
+				strings.Contains(solucaoLower, "gerada indevidamente") ||
+				strings.Contains(solucaoLower, "gerado errado") ||
+				strings.Contains(solucaoLower, "gerada errada") ||
+				strings.Contains(solucaoLower, "como lentidão") ||
+				strings.Contains(solucaoLower, "como lentidao") ||
+				strings.Contains(solucaoLower, "como reparo") ||
+				strings.Contains(solucaoLower, "como suporte") ||
+				strings.Contains(solucaoLower, "nao teve viabilida") ||
+				strings.Contains(solucaoLower, "não teve viabilida") ||
+				strings.Contains(solucaoLower, "sem viabilidade") ||
+				strings.Contains(solucaoLower, "cto muito longe") ||
+				strings.Contains(solucaoLower, "cto longe") ||
+				strings.Contains(solucaoLower, "inviabilidade técnica") ||
+				strings.Contains(solucaoLower, "inviabilidade tecnica") ||
+				strings.Contains(solucaoLower, "não foi possível instalar") ||
+				strings.Contains(solucaoLower, "nao foi possivel instalar") ||
+				strings.Contains(solucaoLower, "não foi instalad") ||
+				strings.Contains(solucaoLower, "nao foi instalad") ||
+				strings.Contains(solucaoLower, "não instalad") ||
+				strings.Contains(solucaoLower, "nao instalad") ||
+				strings.Contains(fullTextLower, "os gerada incorretamente") ||
+				strings.Contains(fullTextLower, "atendimento gerado incorretamente") ||
+				strings.Contains(fullTextLower, "atendimento aberto incorretamente") ||
+				strings.Contains(fullTextLower, "os aberta incorretamente") ||
+				strings.Contains(fullTextLower, "atendimento não era instalação") ||
+				strings.Contains(fullTextLower, "atendimento nao era instalacao") ||
+				strings.Contains(solucaoLower, "pós venda") ||
+				strings.Contains(solucaoLower, "pos venda") ||
+				strings.Contains(fullTextLower, "verificar com o cliente se ele estar satisfeito") ||
+				strings.Contains(fullTextLower, "verificar com o cliente se ele esta satisfeito") {
+				continue
+			}
+
+			// Ambos os trechos indicam instalação física/técnica concluída com sucesso
+			sucesso := true
+
+			contratoMatch := reContrato.FindStringSubmatch(at.Assunto)
+			contrato := ""
+			if len(contratoMatch) > 1 {
+				contrato = contratoMatch[1]
+			}
+
+			matched = append(matched, itemInstalacao{
+				at:       at,
+				contrato: contrato,
+				sucesso:  sucesso,
+			})
+
+			cliCodeTrim := strings.TrimSpace(at.CodigoCliente)
+			if cliCodeTrim != "" && !seenCodes[cliCodeTrim] {
+				seenCodes[cliCodeTrim] = true
+				clientCodesToEnrich = append(clientCodesToEnrich, cliCodeTrim)
+			}
+		}
+
+		// Enriquecer dados dos clientes (Nome, Cidade, Bairro) via RBX em lotes
+		clientDetails := make(map[string]rbx.ClientAddressResult)
+		if len(clientCodesToEnrich) > 0 {
+			resMap, errCli := client.ConsultarClientes(ctx, clientCodesToEnrich)
+			if errCli == nil && resMap != nil {
+				clientDetails = resMap
+			} else {
+				log.Printf("[RBX OPERACIONAL] Erro ao consultar detalhes cadastrais dos clientes: %v", errCli)
+			}
+		}
+
+		// Limpa registros anteriores da competência para evitar lixo residual
+		_, _ = dbPool.Exec(ctx, "DELETE FROM rbx_atendimentos_instalacoes WHERE mes_competencia = $1", month)
+
+		for _, item := range matched {
+			at := item.at
+			cleanCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(at.CodigoCliente), ".", ""), ",", "")
+			nomeCliente := ""
+			cidade := ""
+			bairro := ""
+
+			if details, ok := clientDetails[cleanCode]; ok {
+				nomeCliente = details.Name
+				cidade = details.City
+				bairro = details.Neighborhood
+			}
+
+			// Se tivermos os dados cadastrais, grava também na tabela clientes para busca unificada
+			if nomeCliente != "" && cleanCode != "" {
+				_, _ = dbPool.Exec(ctx, `
+					INSERT INTO clientes (codigo_rbx, nome, cidade, bairro, status)
+					VALUES ($1, $2, $3, $4, 'ativo')
+					ON CONFLICT (codigo_rbx) DO UPDATE SET
+						nome = CASE WHEN EXCLUDED.nome != '' THEN EXCLUDED.nome ELSE clientes.nome END,
+						cidade = CASE WHEN EXCLUDED.cidade != '' THEN EXCLUDED.cidade ELSE clientes.cidade END,
+						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
+				`, cleanCode, nomeCliente, cidade, bairro)
+			}
+
+			_, errIns := dbPool.Exec(ctx, `
+				INSERT INTO rbx_atendimentos_instalacoes (
+					numero, protocolo, codigo_cliente, nome_cliente, contrato, mes_competencia,
+					data_abertura, data_encerramento, situacao_os,
+					topico, causa, assunto, solucao, usuario_abertura,
+					instalado_com_sucesso, cidade, bairro, sincronizado_em
+				) VALUES (
+					$1, $2, $3, $4, $5, $6,
+					$7, $8, $9,
+					$10, $11, $12, $13, $14,
+					$15, $16, $17, CURRENT_TIMESTAMP
+				)
+				ON CONFLICT (numero) DO UPDATE SET
+					protocolo = EXCLUDED.protocolo,
+					codigo_cliente = EXCLUDED.codigo_cliente,
+					nome_cliente = CASE WHEN EXCLUDED.nome_cliente != '' THEN EXCLUDED.nome_cliente ELSE rbx_atendimentos_instalacoes.nome_cliente END,
+					contrato = EXCLUDED.contrato,
+					data_abertura = EXCLUDED.data_abertura,
+					data_encerramento = EXCLUDED.data_encerramento,
+					situacao_os = EXCLUDED.situacao_os,
+					topico = EXCLUDED.topico,
+					causa = EXCLUDED.causa,
+					assunto = EXCLUDED.assunto,
+					solucao = EXCLUDED.solucao,
+					usuario_abertura = EXCLUDED.usuario_abertura,
+					instalado_com_sucesso = EXCLUDED.instalado_com_sucesso,
+					cidade = CASE WHEN EXCLUDED.cidade != '' THEN EXCLUDED.cidade ELSE rbx_atendimentos_instalacoes.cidade END,
+					bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE rbx_atendimentos_instalacoes.bairro END,
+					sincronizado_em = CURRENT_TIMESTAMP
+			`,
+				at.Numero, at.Protocolo, at.CodigoCliente, nomeCliente, item.contrato, month,
+				at.AberturaDataHora, at.EncerramentoDataHora, at.SituacaoOS,
+				at.Topico, at.Causa, at.Assunto, at.Solucao, at.UsuarioAbertura,
+				item.sucesso, cidade, bairro,
+			)
+
+			if errIns == nil {
+				instalacoesTotal++
+				if item.sucesso {
+					instalacoesSucesso++
+				}
+			}
+		}
+
+		// Garante a remoção de atendimentos abertos incorretamente ou com fluxo inválido
+		_, _ = dbPool.Exec(ctx, `
+			DELETE FROM rbx_atendimentos_instalacoes
+			WHERE mes_competencia = $1
+			  AND (
+				solucao ILIKE '%aberto incorretamente%'
+				OR solucao ILIKE '%aberta incorretamente%'
+				OR solucao ILIKE '%aberto indevidamente%'
+				OR solucao ILIKE '%aberta indevidamente%'
+				OR solucao ILIKE '%abertura errada%'
+				OR solucao ILIKE '%abertura incorreta%'
+				OR solucao ILIKE '%abertura indevida%'
+				OR solucao ILIKE '%fluxo incorreto%'
+				OR solucao ILIKE '%n%o era instala%'
+				OR solucao ILIKE '%aberto errado%'
+				OR solucao ILIKE '%aberta errada%'
+				OR solucao ILIKE '%aberto por engano%'
+				OR solucao ILIKE '%aberta por engano%'
+				OR solucao ILIKE '%gerad%incorret%'
+				OR solucao ILIKE '%gerad%errad%'
+				OR solucao ILIKE '%gerad%indevid%'
+				OR solucao ILIKE '%como lentid%'
+				OR solucao ILIKE '%como reparo%'
+				OR solucao ILIKE '%como suporte%'
+				OR solucao ILIKE '%nao teve viabilida%'
+				OR solucao ILIKE '%não teve viabilida%'
+				OR solucao ILIKE '%sem viabilidade%'
+				OR solucao ILIKE '%cto muito longe%'
+				OR solucao ILIKE '%cto longe%'
+				OR solucao ILIKE '%inviabilidade técnica%'
+				OR solucao ILIKE '%inviabilidade tecnica%'
+				OR solucao ILIKE '%não foi possível instalar%'
+				OR solucao ILIKE '%nao foi possivel instalar%'
+				OR solucao ILIKE '%não foi instalad%'
+				OR solucao ILIKE '%nao foi instalad%'
+				OR solucao ILIKE '%não instalad%'
+				OR solucao ILIKE '%nao instalad%'
+			  )
+		`, month)
+	} else {
+		log.Printf("[RBX OPERACIONAL] Erro ao buscar atendimentos de instalação: %v", err)
+	}
+
+	// 3. Consolidar Inadimplentes (Apenas Bloqueados da base de competência; suspensos removidos da visualização)
+	var bloqueadosAtivos, suspensos int
+	_ = dbPool.QueryRow(ctx, `
+		SELECT 
+			COUNT(*) FILTER (WHERE (status_desfecho = 'blocked' OR status_rbx_codigo IN ('B', 'P')) AND status_rbx_codigo != 'S' AND status_desfecho != 'suspended'),
+			COUNT(*) FILTER (WHERE status_desfecho = 'suspended' OR status_rbx_codigo = 'S')
+		FROM eventos_bloqueio
+		WHERE mes_competencia = $1 AND NOT eh_mimo
+	`, month).Scan(&bloqueadosAtivos, &suspensos)
+
+	totalInadimplentes := bloqueadosAtivos
+
+	// 4. Salvar totais consolidados no banco de dados para evitar consultas desnecessárias
+	_, _ = dbPool.Exec(ctx, `
+		INSERT INTO rbx_metricas_mensais (
+			mes_competencia, total_instalacoes, instalacoes_sucesso,
+			total_cancelamentos, total_bloqueados, total_suspensos,
+			total_inadimplentes, atualizado_em
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+		ON CONFLICT (mes_competencia) DO UPDATE SET
+			total_instalacoes = EXCLUDED.total_instalacoes,
+			instalacoes_sucesso = EXCLUDED.instalacoes_sucesso,
+			total_cancelamentos = EXCLUDED.total_cancelamentos,
+			total_bloqueados = EXCLUDED.total_bloqueados,
+			total_suspensos = EXCLUDED.total_suspensos,
+			total_inadimplentes = EXCLUDED.total_inadimplentes,
+			atualizado_em = CURRENT_TIMESTAMP
+	`, month, instalacoesTotal, instalacoesSucesso, canceladosCount, bloqueadosAtivos, 0, totalInadimplentes)
+
+	return map[string]interface{}{
+		"mesCompetencia":     month,
+		"totalInstalacoes":   instalacoesTotal,
+		"instalacoesSucesso": instalacoesSucesso,
+		"totalCancelamentos": canceladosCount,
+		"totalBloqueados":    bloqueadosAtivos,
+		"totalSuspensos":     0,
+		"totalInadimplentes": totalInadimplentes,
+	}, nil
+}
+
+// syncRbxAutenticacoesBase sincroniza todas as autenticações do RBX e cruza com os contratos históricos até Fev/2026
+func syncRbxAutenticacoesBase(ctx context.Context, client *rbx.Client) (map[string]interface{}, error) {
+	if dbPool == nil {
+		return nil, fmt.Errorf("banco de dados não disponível")
+	}
+
+	log.Printf("[RBX AUTENTICACOES] Iniciando sincronização da base de autenticações...")
+
+	// 1. Consulta todas as autenticações no RBX
+	auths, err := client.ConsultarAutenticacoes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao consultar autenticações no RBX: %v", err)
+	}
+
+	// 2. Consulta contratos criados até 31/10/2026 (indexados por número e por cliente, cobrindo Jan a Out)
+	contratosHist, err := client.ConsultarContratosBaseHistorica(ctx, "2026-10-31")
+	if err != nil {
+		log.Printf("[RBX AUTENTICACOES] Aviso: erro ao consultar contratos históricos: %v", err)
+		contratosHist = rbx.ContratosHistoricosResult{
+			PorNumero:  make(map[string]rbx.ContratoBaseResult),
+			PorCliente: make(map[string]rbx.ContratoBaseResult),
+		}
+	}
+
+	totalAuths := len(auths)
+	totalCentral := 0
+	totalPPPoE := 0
+	totalPPPoEJan := 0
+	totalPPPoEFev := 0
+	totalPPPoEMar := 0
+	totalPPPoEAbr := 0
+	totalPPPoEMai := 0
+	totalPPPoEJun := 0
+	totalPPPoEJul := 0
+	totalPPPoEAgo := 0
+	totalPPPoESet := 0
+	totalPPPoEOut := 0
+	totalConexoesGrafanaJan := 0
+	totalConexoesGrafanaFev := 0
+	totalConexoesGrafanaMar := 0
+	totalConexoesGrafanaAbr := 0
+	totalConexoesGrafanaMai := 0
+	totalConexoesGrafanaJun := 0
+	totalConexoesGrafanaJul := 0
+	totalConexoesGrafanaAgo := 0
+	totalConexoesGrafanaSet := 0
+	totalConexoesGrafanaOut := 0
+	totalUpgradesJan := 0
+	totalUpgradesFev := 0
+	totalUpgradesMar := 0
+	totalUpgradesAbr := 0
+	totalUpgradesMai := 0
+	totalUpgradesJun := 0
+	totalUpgradesJul := 0
+	totalUpgradesAgo := 0
+	totalUpgradesSet := 0
+	totalUpgradesOut := 0
+	totalExcluidosGrupo := 0
+
+	statusCounts := map[string]int{
+		"A": 0, "B": 0, "S": 0, "C": 0, "outros": 0,
+	}
+
+	limiteJan := time.Date(2026, 1, 31, 23, 59, 59, 0, time.UTC)
+	limiteFev := time.Date(2026, 2, 28, 23, 59, 59, 0, time.UTC)
+	limiteMar := time.Date(2026, 3, 31, 23, 59, 59, 0, time.UTC)
+	limiteAbr := time.Date(2026, 4, 30, 23, 59, 59, 0, time.UTC)
+	limiteMai := time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC)
+	limiteJun := time.Date(2026, 6, 30, 23, 59, 59, 0, time.UTC)
+	limiteJul := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
+	limiteAgo := time.Date(2026, 8, 31, 23, 59, 59, 0, time.UTC)
+	limiteSet := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
+	limiteOut := time.Date(2026, 10, 31, 23, 59, 59, 0, time.UTC)
+
+	batch := &pgx.Batch{}
+	for _, a := range auths {
+		ehCentral := a.EhCentralAssinante
+		if ehCentral {
+			totalCentral++
+		} else {
+			totalPPPoE++
+		}
+
+		c, hasContr := contratosHist.PorNumero[a.Contrato]
+		cliCode := a.Cliente
+		cliNome := ""
+		grupoCliente := ""
+		var dtAss, dtIni, dtUltOp *time.Time
+		sitCod := ""
+		sitDesc := ""
+		criadoAteJan := false
+		ativoEmJan := false
+		situacaoEmJan := ""
+
+		criadoAteFev := false
+		ativoEmFev := false
+		situacaoEmFev := ""
+
+		criadoAteMar := false
+		ativoEmMar := false
+		situacaoEmMar := ""
+
+		criadoAteAbr := false
+		ativoEmAbr := false
+		situacaoEmAbr := ""
+
+		criadoAteMai := false
+		ativoEmMai := false
+		situacaoEmMai := ""
+
+		criadoAteJun := false
+		ativoEmJun := false
+		situacaoEmJun := ""
+
+		criadoAteJul := false
+		ativoEmJul := false
+		situacaoEmJul := ""
+
+		criadoAteAgo := false
+		ativoEmAgo := false
+		situacaoEmAgo := ""
+
+		criadoAteSet := false
+		ativoEmSet := false
+		situacaoEmSet := ""
+
+		criadoAteOut := false
+		ativoEmOut := false
+		situacaoEmOut := ""
+
+		origemUpgrade := false
+		contratoAnterior := ""
+
+		if hasContr {
+			if c.ClienteCodigo != "" {
+				cliCode = c.ClienteCodigo
+			}
+			cliNome = c.ClienteNome
+			grupoCliente = c.ClienteGrupo
+			dtAss = c.Assinatura
+			dtIni = c.Inicio
+			sitCod = c.SituacaoCodigo
+			sitDesc = c.SituacaoDescricao
+			dtUltOp = c.DataUltimaOperacao
+
+			if a.Usuario == "mgb_escolaverjoaquimsilva" || a.Contrato == "20346" || c.Numero == "20346" {
+				c.SituacaoCodigo = "C"
+				c.SituacaoDescricao = "Cancelado"
+				sitCod = "C"
+				sitDesc = "Cancelado"
+				dtUltOp = nil
+			}
+
+			criadoAteOut = true
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteSet)) || (c.Inicio != nil && !c.Inicio.After(limiteSet)) {
+				criadoAteSet = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteAgo)) || (c.Inicio != nil && !c.Inicio.After(limiteAgo)) {
+				criadoAteAgo = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteJul)) || (c.Inicio != nil && !c.Inicio.After(limiteJul)) {
+				criadoAteJul = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteJun)) || (c.Inicio != nil && !c.Inicio.After(limiteJun)) {
+				criadoAteJun = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteMai)) || (c.Inicio != nil && !c.Inicio.After(limiteMai)) {
+				criadoAteMai = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteAbr)) || (c.Inicio != nil && !c.Inicio.After(limiteAbr)) {
+				criadoAteAbr = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteMar)) || (c.Inicio != nil && !c.Inicio.After(limiteMar)) {
+				criadoAteMar = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteFev)) || (c.Inicio != nil && !c.Inicio.After(limiteFev)) {
+				criadoAteFev = true
+			}
+			if (c.Assinatura != nil && !c.Assinatura.After(limiteJan)) || (c.Inicio != nil && !c.Inicio.After(limiteJan)) {
+				criadoAteJan = true
+			}
+
+			if !ehCentral {
+				// Avaliação para Janeiro
+				if criadoAteJan {
+					totalPPPoEJan++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmJan = true
+						situacaoEmJan = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmJan = false
+						situacaoEmJan = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJan) {
+							ativoEmJan = true
+							situacaoEmJan = "Suspenso pós-Jan"
+						} else {
+							ativoEmJan = false
+							situacaoEmJan = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJan) {
+							ativoEmJan = true
+							situacaoEmJan = "Cancelado pós-Jan"
+						} else {
+							ativoEmJan = false
+							situacaoEmJan = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmJan = "Transferido"
+					default:
+						situacaoEmJan = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmJan = "Novo pós-Jan"
+				}
+
+				// Avaliação para Fevereiro
+				if criadoAteFev {
+					totalPPPoEFev++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmFev = true
+						situacaoEmFev = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmFev = false
+						situacaoEmFev = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteFev) {
+							ativoEmFev = true
+							situacaoEmFev = "Suspenso pós-Fev"
+						} else {
+							ativoEmFev = false
+							situacaoEmFev = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteFev) {
+							ativoEmFev = true
+							situacaoEmFev = "Cancelado pós-Fev"
+						} else {
+							ativoEmFev = false
+							situacaoEmFev = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmFev = "Transferido"
+					default:
+						situacaoEmFev = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmFev = "Novo pós-Fev"
+				}
+
+				// Avaliação para Março
+				if criadoAteMar {
+					totalPPPoEMar++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmMar = true
+						situacaoEmMar = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmMar = false
+						situacaoEmMar = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteMar) {
+							ativoEmMar = true
+							situacaoEmMar = "Suspenso pós-Mar"
+						} else {
+							ativoEmMar = false
+							situacaoEmMar = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteMar) {
+							ativoEmMar = true
+							situacaoEmMar = "Cancelado pós-Mar"
+						} else {
+							ativoEmMar = false
+							situacaoEmMar = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmMar = "Transferido"
+					default:
+						situacaoEmMar = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmMar = "Novo pós-Mar"
+				}
+
+				// Avaliação para Abril
+				if criadoAteAbr {
+					totalPPPoEAbr++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmAbr = true
+						situacaoEmAbr = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmAbr = false
+						situacaoEmAbr = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteAbr) {
+							ativoEmAbr = true
+							situacaoEmAbr = "Suspenso pós-Abr"
+						} else {
+							ativoEmAbr = false
+							situacaoEmAbr = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteAbr) {
+							ativoEmAbr = true
+							situacaoEmAbr = "Cancelado pós-Abr"
+						} else {
+							ativoEmAbr = false
+							situacaoEmAbr = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmAbr = "Transferido"
+					default:
+						situacaoEmAbr = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmAbr = "Novo pós-Abr"
+				}
+
+				// Avaliação para Maio
+				if criadoAteMai {
+					totalPPPoEMai++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmMai = true
+						situacaoEmMai = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmMai = false
+						situacaoEmMai = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteMai) {
+							ativoEmMai = true
+							situacaoEmMai = "Suspenso pós-Mai"
+						} else {
+							ativoEmMai = false
+							situacaoEmMai = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteMai) {
+							ativoEmMai = true
+							situacaoEmMai = "Cancelado pós-Mai"
+						} else {
+							ativoEmMai = false
+							situacaoEmMai = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmMai = "Transferido"
+					default:
+						situacaoEmMai = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmMai = "Novo pós-Mai"
+				}
+
+				// Avaliação para Junho
+				if criadoAteJun {
+					totalPPPoEJun++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmJun = true
+						situacaoEmJun = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmJun = false
+						situacaoEmJun = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJun) {
+							ativoEmJun = true
+							situacaoEmJun = "Suspenso pós-Jun"
+						} else {
+							ativoEmJun = false
+							situacaoEmJun = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJun) {
+							ativoEmJun = true
+							situacaoEmJun = "Cancelado pós-Jun"
+						} else {
+							ativoEmJun = false
+							situacaoEmJun = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmJun = "Transferido"
+					default:
+						situacaoEmJun = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmJun = "Novo pós-Jun"
+				}
+
+				// Avaliação para Julho
+				if criadoAteJul {
+					totalPPPoEJul++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmJul = true
+						situacaoEmJul = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmJul = false
+						situacaoEmJul = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJul) {
+							ativoEmJul = true
+							situacaoEmJul = "Suspenso pós-Jul"
+						} else {
+							ativoEmJul = false
+							situacaoEmJul = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteJul) {
+							ativoEmJul = true
+							situacaoEmJul = "Cancelado pós-Jul"
+						} else {
+							ativoEmJul = false
+							situacaoEmJul = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmJul = "Transferido"
+					default:
+						situacaoEmJul = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmJul = "Novo pós-Jul"
+				}
+
+				// Avaliação para Agosto
+				if criadoAteAgo {
+					totalPPPoEAgo++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmAgo = true
+						situacaoEmAgo = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmAgo = false
+						situacaoEmAgo = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteAgo) {
+							ativoEmAgo = true
+							situacaoEmAgo = "Suspenso pós-Ago"
+						} else {
+							ativoEmAgo = false
+							situacaoEmAgo = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteAgo) {
+							ativoEmAgo = true
+							situacaoEmAgo = "Cancelado pós-Ago"
+						} else {
+							ativoEmAgo = false
+							situacaoEmAgo = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmAgo = "Transferido"
+					default:
+						situacaoEmAgo = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmAgo = "Novo pós-Ago"
+				}
+
+				// Avaliação para Setembro
+				if criadoAteSet {
+					totalPPPoESet++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmSet = true
+						situacaoEmSet = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmSet = false
+						situacaoEmSet = "Bloqueado (Conectado)"
+					case "S":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteSet) {
+							ativoEmSet = true
+							situacaoEmSet = "Suspenso pós-Set"
+						} else {
+							ativoEmSet = false
+							situacaoEmSet = "Suspenso"
+						}
+					case "C":
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteSet) {
+							ativoEmSet = true
+							situacaoEmSet = "Cancelado pós-Set"
+						} else {
+							ativoEmSet = false
+							situacaoEmSet = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmSet = "Transferido"
+					default:
+						situacaoEmSet = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmSet = "Novo pós-Set"
+				}
+
+				// Avaliação para Outubro
+				if criadoAteOut {
+					totalPPPoEOut++
+					switch c.SituacaoCodigo {
+					case "A":
+						ativoEmOut = true
+						situacaoEmOut = "Ativo (Contínuo)"
+					case "B", "P":
+						ativoEmOut = false
+						situacaoEmOut = "Bloqueado (Conectado)"
+					case "S":
+						ativoEmOut = false
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteOut) {
+							situacaoEmOut = "Suspenso pós-Out"
+						} else {
+							situacaoEmOut = "Suspenso"
+						}
+					case "C":
+						ativoEmOut = false
+						if c.DataUltimaOperacao != nil && c.DataUltimaOperacao.After(limiteOut) {
+							situacaoEmOut = "Cancelado pós-Out"
+						} else {
+							situacaoEmOut = "Cancelado"
+						}
+					case "T":
+						origemUpgrade = true
+						situacaoEmOut = "Transferido"
+					default:
+						situacaoEmOut = c.SituacaoDescricao
+					}
+				} else {
+					situacaoEmOut = "Novo pós-Out"
+				}
+			}
+		} else {
+			// Contrato atual é pós-Outubro/2026. Verifica se o CLIENTE já existia antes:
+			cOld, hasOldCli := contratosHist.PorCliente[a.Cliente]
+			if hasOldCli && !ehCentral {
+				origemUpgrade = true
+				contratoAnterior = cOld.Numero
+				cliNome = cOld.ClienteNome
+				grupoCliente = cOld.ClienteGrupo
+				if cOld.ClienteCodigo != "" {
+					cliCode = cOld.ClienteCodigo
+				}
+
+				// Verificação Janeiro
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteJan)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteJan)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteJan)) {
+						ativoEmJan = true
+						situacaoEmJan = "Upgrade pós-Jan (Ativo em Jan)"
+						totalUpgradesJan++
+					} else {
+						situacaoEmJan = "Cliente Antigo (Inativo em Jan)"
+					}
+				} else {
+					situacaoEmJan = "Novo Cliente pós-Jan"
+				}
+
+				// Verificação Fevereiro
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteFev)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteFev)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteFev)) {
+						ativoEmFev = true
+						situacaoEmFev = "Upgrade pós-Fev (Ativo em Fev)"
+						totalUpgradesFev++
+					} else {
+						situacaoEmFev = "Cliente Antigo (Inativo em Fev)"
+					}
+				} else {
+					situacaoEmFev = "Novo Cliente pós-Fev"
+				}
+
+				// Verificação Março
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteMar)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteMar)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteMar)) {
+						ativoEmMar = true
+						situacaoEmMar = "Upgrade pós-Mar (Ativo em Mar)"
+						totalUpgradesMar++
+					} else {
+						situacaoEmMar = "Cliente Antigo (Inativo em Mar)"
+					}
+				} else {
+					situacaoEmMar = "Novo Cliente pós-Mar"
+				}
+
+				// Verificação Abril
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteAbr)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteAbr)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteAbr)) {
+						ativoEmAbr = true
+						situacaoEmAbr = "Upgrade pós-Abr (Ativo em Abr)"
+						totalUpgradesAbr++
+					} else {
+						situacaoEmAbr = "Cliente Antigo (Inativo em Abr)"
+					}
+				} else {
+					situacaoEmAbr = "Novo Cliente pós-Abr"
+				}
+
+				// Verificação Maio
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteMai)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteMai)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteMai)) {
+						ativoEmMai = true
+						situacaoEmMai = "Upgrade pós-Mai (Ativo em Mai)"
+						totalUpgradesMai++
+					} else {
+						situacaoEmMai = "Cliente Antigo (Inativo em Mai)"
+					}
+				} else {
+					situacaoEmMai = "Novo Cliente pós-Mai"
+				}
+
+				// Verificação Junho
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteJun)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteJun)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteJun)) {
+						ativoEmJun = true
+						situacaoEmJun = "Upgrade pós-Jun (Ativo em Jun)"
+						totalUpgradesJun++
+					} else {
+						situacaoEmJun = "Cliente Antigo (Inativo em Jun)"
+					}
+				} else {
+					situacaoEmJun = "Novo Cliente pós-Jun"
+				}
+
+				// Verificação Julho
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteJul)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteJul)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteJul)) {
+						ativoEmJul = true
+						situacaoEmJul = "Upgrade pós-Jul (Ativo em Jul)"
+						totalUpgradesJul++
+					} else {
+						situacaoEmJul = "Cliente Antigo (Inativo em Jul)"
+					}
+				} else {
+					situacaoEmJul = "Novo Cliente pós-Jul"
+				}
+
+				// Verificação Agosto
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteAgo)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteAgo)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteAgo)) {
+						ativoEmAgo = true
+						situacaoEmAgo = "Upgrade pós-Ago (Ativo em Ago)"
+						totalUpgradesAgo++
+					} else {
+						situacaoEmAgo = "Cliente Antigo (Inativo em Ago)"
+					}
+				} else {
+					situacaoEmAgo = "Novo Cliente pós-Ago"
+				}
+
+				// Verificação Setembro
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteSet)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteSet)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteSet)) {
+						ativoEmSet = true
+						situacaoEmSet = "Upgrade pós-Set (Ativo em Set)"
+						totalUpgradesSet++
+					} else {
+						situacaoEmSet = "Cliente Antigo (Inativo em Set)"
+					}
+				} else {
+					situacaoEmSet = "Novo Cliente pós-Set"
+				}
+
+				// Verificação Outubro
+				if (cOld.Assinatura != nil && !cOld.Assinatura.After(limiteOut)) || (cOld.Inicio != nil && !cOld.Inicio.After(limiteOut)) {
+					if cOld.SituacaoCodigo == "A" || cOld.SituacaoCodigo == "T" || (cOld.DataUltimaOperacao != nil && cOld.DataUltimaOperacao.After(limiteOut)) {
+						ativoEmOut = true
+						situacaoEmOut = "Upgrade pós-Out (Ativo em Out)"
+						totalUpgradesOut++
+					} else {
+						situacaoEmOut = "Cliente Antigo (Inativo em Out)"
+					}
+				} else {
+					situacaoEmOut = "Novo Cliente pós-Out"
+				}
+			} else if !ehCentral {
+				situacaoEmJan = "Novo Cliente pós-Jan"
+				situacaoEmFev = "Novo Cliente pós-Fev"
+				situacaoEmMar = "Novo Cliente pós-Mar"
+				situacaoEmAbr = "Novo Cliente pós-Abr"
+				situacaoEmMai = "Novo Cliente pós-Mai"
+				situacaoEmJun = "Novo Cliente pós-Jun"
+				situacaoEmJul = "Novo Cliente pós-Jul"
+				situacaoEmAgo = "Novo Cliente pós-Ago"
+				situacaoEmSet = "Novo Cliente pós-Set"
+				situacaoEmOut = "Novo Cliente pós-Out"
+			}
+		}
+
+		if grupoCliente == "" {
+			if cOld, ok := contratosHist.PorCliente[cliCode]; ok {
+				grupoCliente = cOld.ClienteGrupo
+			}
+		}
+
+		ehGrupoExcluido := rbx.EhGrupoExcluido(grupoCliente)
+		if ehGrupoExcluido {
+			ativoEmJan = false
+			ativoEmFev = false
+			ativoEmMar = false
+			ativoEmAbr = false
+			ativoEmMai = false
+			ativoEmJun = false
+			ativoEmJul = false
+			ativoEmAgo = false
+			ativoEmSet = false
+			ativoEmOut = false
+			totalExcluidosGrupo++
+			if situacaoEmJan != "" {
+				situacaoEmJan = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmFev != "" {
+				situacaoEmFev = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmMar != "" {
+				situacaoEmMar = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmAbr != "" {
+				situacaoEmAbr = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmMai != "" {
+				situacaoEmMai = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmJun != "" {
+				situacaoEmJun = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmJul != "" {
+				situacaoEmJul = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmAgo != "" {
+				situacaoEmAgo = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmSet != "" {
+				situacaoEmSet = "Grupo Excluído (" + grupoCliente + ")"
+			}
+			if situacaoEmOut != "" {
+				situacaoEmOut = "Grupo Excluído (" + grupoCliente + ")"
+			}
+		}
+
+		if ativoEmJan && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaJan++
+		}
+		if ativoEmFev && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaFev++
+		}
+		if ativoEmMar && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaMar++
+		}
+		if ativoEmAbr && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaAbr++
+		}
+		if ativoEmMai && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaMai++
+		}
+		if ativoEmJun && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaJun++
+		}
+		if ativoEmJul && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaJul++
+		}
+		if ativoEmAgo && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaAgo++
+		}
+		if ativoEmSet && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaSet++
+		}
+		if ativoEmOut && !ehCentral && !ehGrupoExcluido {
+			totalConexoesGrafanaOut++
+		}
+
+		batch.Queue(`
+			INSERT INTO rbx_autenticacoes (
+				id_autenticacao, codigo_cliente, nome_cliente, numero_contrato,
+				nas, porta, usuario, mac, observacao, eh_central_assinante,
+				data_assinatura, data_inicio, situacao_codigo, situacao_descricao,
+				data_ultima_operacao, criado_ate_janeiro_2026, ativo_em_janeiro_2026,
+				origem_upgrade, contrato_anterior, situacao_em_janeiro,
+				grupo_cliente, eh_grupo_excluido,
+				criado_ate_fevereiro_2026, ativo_em_fevereiro_2026, situacao_em_fevereiro,
+				criado_ate_marco_2026, ativo_em_marco_2026, situacao_em_marco,
+				criado_ate_abril_2026, ativo_em_abril_2026, situacao_em_abril,
+				criado_ate_maio_2026, ativo_em_maio_2026, situacao_em_maio,
+				criado_ate_junho_2026, ativo_em_junho_2026, situacao_em_junho,
+				criado_ate_julho_2026, ativo_em_julho_2026, situacao_em_julho,
+				criado_ate_agosto_2026, ativo_em_agosto_2026, situacao_em_agosto,
+				criado_ate_setembro_2026, ativo_em_setembro_2026, situacao_em_setembro,
+				criado_ate_outubro_2026, ativo_em_outubro_2026, situacao_em_outubro,
+				sincronizado_em
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, CURRENT_TIMESTAMP)
+			ON CONFLICT (id_autenticacao) DO UPDATE SET
+				codigo_cliente = EXCLUDED.codigo_cliente,
+				nome_cliente = CASE WHEN EXCLUDED.nome_cliente != '' THEN EXCLUDED.nome_cliente ELSE rbx_autenticacoes.nome_cliente END,
+				numero_contrato = EXCLUDED.numero_contrato,
+				nas = EXCLUDED.nas,
+				porta = EXCLUDED.porta,
+				usuario = EXCLUDED.usuario,
+				mac = EXCLUDED.mac,
+				observacao = EXCLUDED.observacao,
+				eh_central_assinante = EXCLUDED.eh_central_assinante,
+				data_assinatura = EXCLUDED.data_assinatura,
+				data_inicio = EXCLUDED.data_inicio,
+				situacao_codigo = EXCLUDED.situacao_codigo,
+				situacao_descricao = EXCLUDED.situacao_descricao,
+				data_ultima_operacao = EXCLUDED.data_ultima_operacao,
+				criado_ate_janeiro_2026 = EXCLUDED.criado_ate_janeiro_2026,
+				ativo_em_janeiro_2026 = EXCLUDED.ativo_em_janeiro_2026,
+				origem_upgrade = EXCLUDED.origem_upgrade,
+				contrato_anterior = EXCLUDED.contrato_anterior,
+				situacao_em_janeiro = EXCLUDED.situacao_em_janeiro,
+				grupo_cliente = EXCLUDED.grupo_cliente,
+				eh_grupo_excluido = EXCLUDED.eh_grupo_excluido,
+				criado_ate_fevereiro_2026 = EXCLUDED.criado_ate_fevereiro_2026,
+				ativo_em_fevereiro_2026 = EXCLUDED.ativo_em_fevereiro_2026,
+				situacao_em_fevereiro = EXCLUDED.situacao_em_fevereiro,
+				criado_ate_marco_2026 = EXCLUDED.criado_ate_marco_2026,
+				ativo_em_marco_2026 = EXCLUDED.ativo_em_marco_2026,
+				situacao_em_marco = EXCLUDED.situacao_em_marco,
+				criado_ate_abril_2026 = EXCLUDED.criado_ate_abril_2026,
+				ativo_em_abril_2026 = EXCLUDED.ativo_em_abril_2026,
+				situacao_em_abril = EXCLUDED.situacao_em_abril,
+				criado_ate_maio_2026 = EXCLUDED.criado_ate_maio_2026,
+				ativo_em_maio_2026 = EXCLUDED.ativo_em_maio_2026,
+				situacao_em_maio = EXCLUDED.situacao_em_maio,
+				criado_ate_junho_2026 = EXCLUDED.criado_ate_junho_2026,
+				ativo_em_junho_2026 = EXCLUDED.ativo_em_junho_2026,
+				situacao_em_junho = EXCLUDED.situacao_em_junho,
+				criado_ate_julho_2026 = EXCLUDED.criado_ate_julho_2026,
+				ativo_em_julho_2026 = EXCLUDED.ativo_em_julho_2026,
+				situacao_em_julho = EXCLUDED.situacao_em_julho,
+				criado_ate_agosto_2026 = EXCLUDED.criado_ate_agosto_2026,
+				ativo_em_agosto_2026 = EXCLUDED.ativo_em_agosto_2026,
+				situacao_em_agosto = EXCLUDED.situacao_em_agosto,
+				criado_ate_setembro_2026 = EXCLUDED.criado_ate_setembro_2026,
+				ativo_em_setembro_2026 = EXCLUDED.ativo_em_setembro_2026,
+				situacao_em_setembro = EXCLUDED.situacao_em_setembro,
+				criado_ate_outubro_2026 = EXCLUDED.criado_ate_outubro_2026,
+				ativo_em_outubro_2026 = EXCLUDED.ativo_em_outubro_2026,
+				situacao_em_outubro = EXCLUDED.situacao_em_outubro,
+				sincronizado_em = CURRENT_TIMESTAMP
+		`, a.ID, cliCode, cliNome, a.Contrato,
+			a.NAS, a.Porta, a.Usuario, a.MAC, a.Observacao, ehCentral,
+			dtAss, dtIni, sitCod, sitDesc, dtUltOp, criadoAteJan,
+			ativoEmJan, origemUpgrade, contratoAnterior, situacaoEmJan,
+			grupoCliente, ehGrupoExcluido,
+			criadoAteFev, ativoEmFev, situacaoEmFev,
+			criadoAteMar, ativoEmMar, situacaoEmMar,
+			criadoAteAbr, ativoEmAbr, situacaoEmAbr,
+			criadoAteMai, ativoEmMai, situacaoEmMai,
+			criadoAteJun, ativoEmJun, situacaoEmJun,
+			criadoAteJul, ativoEmJul, situacaoEmJul,
+			criadoAteAgo, ativoEmAgo, situacaoEmAgo,
+			criadoAteSet, ativoEmSet, situacaoEmSet,
+			criadoAteOut, ativoEmOut, situacaoEmOut)
+	}
+
+	br := dbPool.SendBatch(ctx, batch)
+	for i := 0; i < len(auths); i++ {
+		if _, err := br.Exec(); err != nil {
+			log.Printf("[RBX AUTENTICACOES] Erro ao gravar lote item %d: %v", i, err)
+			break
+		}
+	}
+	br.Close()
+
+	log.Printf("[RBX AUTENTICACOES] Sincronização concluída com sucesso: %d autenticações (%d PPPoE, %d até Jan, %d até Fev, %d até Mar, %d até Abr, %d até Mai, %d até Jun, %d até Jul, %d até Ago, %d até Set, %d até Out, %d grupos excluídos).",
+		totalAuths, totalPPPoE, totalPPPoEJan, totalPPPoEFev, totalPPPoEMar, totalPPPoEAbr, totalPPPoEMai, totalPPPoEJun, totalPPPoEJul, totalPPPoEAgo, totalPPPoESet, totalPPPoEOut, totalExcluidosGrupo)
+
+	return map[string]interface{}{
+		"totalAutenticacoes": totalAuths,
+		"centralAssinante":   totalCentral,
+		"gruposExcluidos":    totalExcluidosGrupo,
+		"pppoeTotal":         totalPPPoE,
+		"pppoeAteJan2026":    totalPPPoEJan,
+		"pppoeAteFev2026":    totalPPPoEFev,
+		"pppoeAteMar2026":    totalPPPoEMar,
+		"pppoeAteAbr2026":    totalPPPoEAbr,
+		"pppoeAteMai2026":    totalPPPoEMai,
+		"pppoeAteJun2026":    totalPPPoEJun,
+		"pppoeAteJul2026":    totalPPPoEJul,
+		"pppoeAteAgo2026":    totalPPPoEAgo,
+		"pppoeAteSet2026":    totalPPPoESet,
+		"pppoeAteOut2026":    totalPPPoEOut,
+		"conexoesGrafanaJan": totalConexoesGrafanaJan,
+		"conexoesGrafanaFev": totalConexoesGrafanaFev,
+		"conexoesGrafanaMar": totalConexoesGrafanaMar,
+		"conexoesGrafanaAbr": totalConexoesGrafanaAbr,
+		"conexoesGrafanaMai": totalConexoesGrafanaMai,
+		"conexoesGrafanaJun": totalConexoesGrafanaJun,
+		"conexoesGrafanaJul": totalConexoesGrafanaJul,
+		"conexoesGrafanaAgo": totalConexoesGrafanaAgo,
+		"conexoesGrafanaSet": totalConexoesGrafanaSet,
+		"conexoesGrafanaOut": totalConexoesGrafanaOut,
+		"upgradesJan":        totalUpgradesJan,
+		"upgradesFev":        totalUpgradesFev,
+		"upgradesMar":        totalUpgradesMar,
+		"upgradesAbr":        totalUpgradesAbr,
+		"upgradesMai":        totalUpgradesMai,
+		"upgradesJun":        totalUpgradesJun,
+		"upgradesJul":        totalUpgradesJul,
+		"upgradesAgo":        totalUpgradesAgo,
+		"upgradesSet":        totalUpgradesSet,
+		"upgradesOut":        totalUpgradesOut,
+		"statusCounts":       statusCounts,
+		"sincronizadoEm":     time.Now().Format(time.RFC3339),
+	}, nil
+}
+
 func main() {
 	initDB()
 	startBackgroundSyncScheduler()
@@ -2857,6 +4473,1185 @@ func main() {
 			"success": true,
 			"message": fmt.Sprintf("Sincronização de equipamentos concluída! %d atendimentos de retirada atualizados.", count),
 			"count":   count,
+		})
+	})
+
+	// =========================================================================
+	// ROTAS DO MÓDULO MINHA EMPRESA (Inteligência Operacional RBX)
+	// =========================================================================
+
+	r.Post("/api/empresa/sync", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-01"
+		}
+
+		ctx := r.Context()
+		var rbxURL, rbxToken, rbxVersion string
+		err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+		if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
+			http.Error(w, `{"error": "Integração RBX não configurada. Configure a URL e chave nas opções."}`, http.StatusBadRequest)
+			return
+		}
+
+		client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
+		result, err := syncRbxOperacionalEmpresa(ctx, client, month)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao sincronizar dados operacionais do RBX: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": "Sincronização operacional do RBX concluída e persistida com sucesso no banco!",
+			"data":    result,
+		})
+	})
+
+	r.Get("/api/empresa/indicadores", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-10"
+		}
+
+		ctx := r.Context()
+		var totalInstalacoes, instalacoesSucesso, totalCancelamentos, totalBloqueados, totalSuspensos, totalInadimplentes int
+		var atualizadoEm *time.Time
+
+		err := dbPool.QueryRow(ctx, `
+			SELECT total_instalacoes, instalacoes_sucesso, total_cancelamentos,
+			       total_bloqueados, total_suspensos, total_inadimplentes, atualizado_em
+			FROM rbx_metricas_mensais
+			WHERE mes_competencia = $1
+		`, month).Scan(&totalInstalacoes, &instalacoesSucesso, &totalCancelamentos,
+			&totalBloqueados, &totalSuspensos, &totalInadimplentes, &atualizadoEm)
+
+		// Se ainda não tiver registro consolidado na tabela de métricas, busca contagem dinâmica
+		if err != nil {
+			_ = dbPool.QueryRow(ctx, `
+				SELECT COUNT(*) FROM rbx_atendimentos_instalacoes 
+				WHERE mes_competencia = $1 AND to_char(data_abertura, 'YYYY-MM') = $1
+				  AND solucao NOT ILIKE '%gerad%incorret%'
+				  AND solucao NOT ILIKE '%gerad%errad%'
+				  AND solucao NOT ILIKE '%aberto incorretamente%'
+				  AND solucao NOT ILIKE '%aberta incorretamente%'
+				  AND solucao NOT ILIKE '%abertura errada%'
+				  AND solucao NOT ILIKE '%fluxo incorreto%'
+				  AND solucao NOT ILIKE '%n%o era instala%'
+				  AND solucao NOT ILIKE '%nao teve viabilida%'
+				  AND solucao NOT ILIKE '%não teve viabilida%'
+				  AND solucao NOT ILIKE '%sem viabilidade%'
+				  AND solucao NOT ILIKE '%cto muito longe%'
+				  AND solucao NOT ILIKE '%cto longe%'
+				  AND solucao NOT ILIKE '%inviabilidade técnica%'
+				  AND solucao NOT ILIKE '%inviabilidade tecnica%'
+				  AND solucao NOT ILIKE '%não foi possível instalar%'
+				  AND solucao NOT ILIKE '%nao foi possivel instalar%'
+				  AND solucao NOT ILIKE '%não foi instalad%'
+				  AND solucao NOT ILIKE '%nao foi instalad%'
+				  AND solucao NOT ILIKE '%não instalad%'
+				  AND solucao NOT ILIKE '%nao instalad%'
+				  AND solucao NOT ILIKE '%pós venda%'
+				  AND solucao NOT ILIKE '%pos venda%'
+				  AND assunto NOT ILIKE '%verificar com o cliente se ele esta%satisfeito%'
+			`, month).Scan(&totalInstalacoes)
+			_ = dbPool.QueryRow(ctx, `
+				SELECT COUNT(*) FROM rbx_atendimentos_instalacoes 
+				WHERE mes_competencia = $1 AND to_char(data_abertura, 'YYYY-MM') = $1 AND instalado_com_sucesso = true
+				  AND solucao NOT ILIKE '%gerad%incorret%'
+				  AND solucao NOT ILIKE '%gerad%errad%'
+				  AND solucao NOT ILIKE '%aberto incorretamente%'
+				  AND solucao NOT ILIKE '%aberta incorretamente%'
+				  AND solucao NOT ILIKE '%abertura errada%'
+				  AND solucao NOT ILIKE '%fluxo incorreto%'
+				  AND solucao NOT ILIKE '%n%o era instala%'
+				  AND solucao NOT ILIKE '%nao teve viabilida%'
+				  AND solucao NOT ILIKE '%não teve viabilida%'
+				  AND solucao NOT ILIKE '%sem viabilidade%'
+				  AND solucao NOT ILIKE '%cto muito longe%'
+				  AND solucao NOT ILIKE '%cto longe%'
+				  AND solucao NOT ILIKE '%inviabilidade técnica%'
+				  AND solucao NOT ILIKE '%inviabilidade tecnica%'
+				  AND solucao NOT ILIKE '%não foi possível instalar%'
+				  AND solucao NOT ILIKE '%nao foi possivel instalar%'
+				  AND solucao NOT ILIKE '%não foi instalad%'
+				  AND solucao NOT ILIKE '%nao foi instalad%'
+				  AND solucao NOT ILIKE '%não instalad%'
+				  AND solucao NOT ILIKE '%nao instalad%'
+				  AND solucao NOT ILIKE '%pós venda%'
+				  AND solucao NOT ILIKE '%pos venda%'
+				  AND assunto NOT ILIKE '%verificar com o cliente se ele esta%satisfeito%'
+			`, month).Scan(&instalacoesSucesso)
+			_ = dbPool.QueryRow(ctx, `
+				SELECT COUNT(*) FROM rbx_contratos_cancelados 
+				WHERE mes_competencia = $1
+				  AND motivo_cancelamento NOT ILIKE '%MUD%TITULARIDADE%'
+				  AND motivo_cancelamento NOT ILIKE '%AJUSTE T%CNICO%'
+				  AND motivo_cancelamento NOT ILIKE '%CONTRATO TEMPOR%RIO%'
+				  AND motivo_cancelamento NOT ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+				  AND motivo_cancelamento NOT ILIKE '%ERRO%GERA%O%CONTRATO%'
+				  AND motivo_cancelamento NOT ILIKE '%CANCELAMENTO%MIGRA%'
+				  AND motivo_cancelamento NOT ILIKE '%N%O PAGOU A TAXA%'
+				  AND motivo_cancelamento NOT ILIKE '%NAO PAGOU A TAXA%'
+				  AND motivo_cancelamento NOT ILIKE '%INVIA%'
+				  AND NOT (
+				  	plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+				  	OR plano ILIKE '%+ TV%'
+				  	OR plano ILIKE '%+TV%'
+				  	OR plano ILIKE '%TELEVIS%'
+				  	OR plano ILIKE '%IPTV%'
+				  )
+			`, month).Scan(&totalCancelamentos)
+			_ = dbPool.QueryRow(ctx, `
+				SELECT 
+					COALESCE(COUNT(*) FILTER (WHERE (status_desfecho = 'blocked' OR status_rbx_codigo IN ('B', 'P')) AND status_rbx_codigo != 'S' AND status_desfecho != 'suspended'), 0),
+					0
+				FROM eventos_bloqueio
+				WHERE mes_competencia = $1 AND NOT eh_mimo
+			`, month).Scan(&totalBloqueados, &totalSuspensos)
+			totalInadimplentes = totalBloqueados
+		}
+
+		var mrrSuspensos float64
+		var pctSuspensos float64
+
+		// Busca o número exato de "Ainda Suspensos" da coorte do mês em eventos_bloqueio (idêntico ao card de Clientes Recuperados)
+		_ = dbPool.QueryRow(ctx, `
+			SELECT 
+				COALESCE(COUNT(CASE WHEN e.status_desfecho = 'suspended' THEN 1 END), 0),
+				COALESCE(SUM(CASE WHEN e.status_desfecho = 'suspended' THEN COALESCE(NULLIF(e.valor_mensalidade, 0), c.valor_mensalidade, 0) ELSE 0 END), 0),
+				CASE WHEN COUNT(e.id) > 0 
+					THEN ROUND((COUNT(CASE WHEN e.status_desfecho = 'suspended' THEN 1 END)::numeric / COUNT(e.id)) * 100, 1)
+					ELSE 0 
+				END
+			FROM eventos_bloqueio e
+			JOIN clientes c ON c.codigo_rbx = e.codigo_rbx
+			WHERE e.mes_competencia = $1 
+			  AND NOT e.eh_mimo 
+			  AND e.status_desfecho IN ('returned', 'churned', 'suspended', 'blocked')
+			  AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL)
+		`, month).Scan(&totalSuspensos, &mrrSuspensos, &pctSuspensos)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mesCompetencia":      month,
+			"totalInstalacoes":    totalInstalacoes,
+			"instalacoesSucesso":  instalacoesSucesso,
+			"totalCancelamentos":  totalCancelamentos,
+			"totalBloqueados":     totalBloqueados,
+			"totalSuspensos":      totalSuspensos,
+			"percentualSuspensos": pctSuspensos,
+			"mrrSuspensos":        math.Round(mrrSuspensos*100) / 100,
+			"totalInadimplentes":  totalBloqueados,
+			"atualizadoEm":        atualizadoEm,
+		})
+	})
+
+	// GET /api/empresa/visao-anual: Dados e KPIs anuais exclusivamente do PostgreSQL (sem chamadas à API)
+	r.Get("/api/empresa/visao-anual", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		year := r.URL.Query().Get("year")
+		if year == "" {
+			year = "2026"
+		}
+
+		now := time.Now()
+		currentYearStr := now.Format("2006")
+		maxMonth := now.Format("2006-01")
+		if year < currentYearStr {
+			maxMonth = year + "-12"
+		} else if year > currentYearStr {
+			maxMonth = year + "-12"
+		}
+
+		// 1. Consulta métricas mensais consolidadas com suspensos da coorte
+		rows, err := dbPool.Query(ctx, `
+			SELECT 
+				m.mes_competencia,
+				m.total_instalacoes,
+				m.instalacoes_sucesso,
+				m.total_cancelamentos,
+				(m.instalacoes_sucesso - m.total_cancelamentos - COALESCE(s.total_suspensos, 0)) AS saldo_liquido,
+				COALESCE(s.total_suspensos, 0) AS total_suspensos,
+				COALESCE(c.mrr_cancelado, 0) AS mrr_cancelado,
+				COALESCE(s.mrr_suspensos, 0) AS mrr_suspensos
+			FROM rbx_metricas_mensais m
+			LEFT JOIN (
+				SELECT 
+					e.mes_competencia,
+					COUNT(CASE WHEN e.status_desfecho = 'suspended' THEN 1 END) AS total_suspensos,
+					COALESCE(SUM(CASE WHEN e.status_desfecho = 'suspended' THEN COALESCE(NULLIF(e.valor_mensalidade, 0), cl.valor_mensalidade, 0) ELSE 0 END), 0) AS mrr_suspensos
+				FROM eventos_bloqueio e
+				JOIN clientes cl ON cl.codigo_rbx = e.codigo_rbx
+				WHERE NOT e.eh_mimo 
+				  AND e.status_desfecho IN ('returned', 'churned', 'suspended', 'blocked')
+				  AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL)
+				GROUP BY e.mes_competencia
+			) s ON s.mes_competencia = m.mes_competencia
+			LEFT JOIN (
+				SELECT mes_competencia, SUM(valor_mensalidade) AS mrr_cancelado
+				FROM rbx_contratos_cancelados
+				WHERE motivo_cancelamento NOT ILIKE '%MUD%TITULARIDADE%'
+					AND motivo_cancelamento NOT ILIKE '%AJUSTE T%CNICO%'
+					AND motivo_cancelamento NOT ILIKE '%CONTRATO TEMPOR%RIO%'
+					AND motivo_cancelamento NOT ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+					AND motivo_cancelamento NOT ILIKE '%ERRO%GERA%O%CONTRATO%'
+					AND motivo_cancelamento NOT ILIKE '%CANCELAMENTO%MIGRA%'
+					AND motivo_cancelamento NOT ILIKE '%N%O PAGOU A TAXA%'
+					AND motivo_cancelamento NOT ILIKE '%NAO PAGOU A TAXA%'
+					AND motivo_cancelamento NOT ILIKE '%INVIA%'
+					AND NOT (
+						plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+						OR plano ILIKE '%+ TV%'
+						OR plano ILIKE '%+TV%'
+						OR plano ILIKE '%TELEVIS%'
+						OR plano ILIKE '%IPTV%'
+					)
+				GROUP BY mes_competencia
+			) c ON c.mes_competencia = m.mes_competencia
+			WHERE m.mes_competencia LIKE $1 || '-%' AND m.mes_competencia <= $2
+			ORDER BY m.mes_competencia ASC
+		`, year, maxMonth)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar dados anuais: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		baseAtivaMesMap := map[string]int{
+			"2026-01": 7849,
+			"2026-02": 7937,
+			"2026-03": 8010,
+			"2026-04": 8158,
+			"2026-05": 8274,
+			"2026-06": 8367,
+			"2026-07": 8425,
+			"2026-08": 8395,
+			"2026-09": 8337,
+			"2026-10": 8252,
+		}
+
+		mesesLabels := map[string]string{
+			"01": "Jan", "02": "Fev", "03": "Mar", "04": "Abr", "05": "Mai", "06": "Jun",
+			"07": "Jul", "08": "Ago", "09": "Set", "10": "Out", "11": "Nov", "12": "Dez",
+		}
+
+		type MesStat struct {
+			Mes                string  `json:"mes"`
+			MesLabel           string  `json:"mesLabel"`
+			TotalInstalacoes   int     `json:"totalInstalacoes"`
+			InstalacoesSucesso int     `json:"instalacoesSucesso"`
+			TotalCancelamentos int     `json:"totalCancelamentos"`
+			SaldoLiquido       int     `json:"saldoLiquido"`
+			TotalSuspensos     int     `json:"totalSuspensos"`
+			BaseAtiva          int     `json:"baseAtiva"`
+			ChurnRate          float64 `json:"churnRate"`
+			MrrCancelado       float64 `json:"mrrCancelado"`
+			MrrSuspensos       float64 `json:"mrrSuspensos"`
+		}
+
+		var meses []MesStat
+		var totalInstAnual, totalSucessoAnual, totalCancAnual, saldoLiqAnual int
+		var totalMrrCanceladoAnual float64
+		var totalSuspensosAnual int
+		var totalMrrSuspensosAnual float64
+		var sumChurnRate float64
+		lastBase := 7849
+
+		for rows.Next() {
+			var mesComp string
+			var totInst, instSuc, totCanc, saldoLiq, totSusp int
+			var mrrCanc, mrrSusp float64
+			if err := rows.Scan(&mesComp, &totInst, &instSuc, &totCanc, &saldoLiq, &totSusp, &mrrCanc, &mrrSusp); err != nil {
+				continue
+			}
+
+			baseAtiva, exists := baseAtivaMesMap[mesComp]
+			if !exists || baseAtiva == 0 {
+				baseAtiva = lastBase + saldoLiq
+			}
+			lastBase = baseAtiva
+
+			churnRate := 0.0
+			if baseAtiva > 0 {
+				churnRate = (float64(totCanc) / float64(baseAtiva)) * 100.0
+			}
+
+			parts := strings.Split(mesComp, "-")
+			label := mesComp
+			if len(parts) == 2 {
+				if l, ok := mesesLabels[parts[1]]; ok {
+					label = fmt.Sprintf("%s/%s", l, parts[0][2:])
+				}
+			}
+
+			meses = append(meses, MesStat{
+				Mes:                mesComp,
+				MesLabel:           label,
+				TotalInstalacoes:   totInst,
+				InstalacoesSucesso: instSuc,
+				TotalCancelamentos: totCanc,
+				SaldoLiquido:       saldoLiq,
+				TotalSuspensos:     totSusp,
+				BaseAtiva:          baseAtiva,
+				ChurnRate:          math.Round(churnRate*100) / 100,
+				MrrCancelado:       math.Round(mrrCanc*100) / 100,
+				MrrSuspensos:       math.Round(mrrSusp*100) / 100,
+			})
+
+			totalInstAnual += totInst
+			totalSucessoAnual += instSuc
+			totalCancAnual += totCanc
+			saldoLiqAnual += saldoLiq
+			totalSuspensosAnual += totSusp
+			totalMrrSuspensosAnual += mrrSusp
+			totalMrrCanceladoAnual += mrrCanc
+			sumChurnRate += churnRate
+		}
+
+		qtdMeses := len(meses)
+		if qtdMeses == 0 {
+			qtdMeses = 1
+		}
+		mediaMensalInstalacoes := math.Round((float64(totalSucessoAnual)/float64(qtdMeses))*10) / 10
+		mediaMensalCancelamentos := math.Round((float64(totalCancAnual)/float64(qtdMeses))*10) / 10
+		churnMedioAnual := math.Round((sumChurnRate/float64(qtdMeses))*100) / 100
+		taxaRetencaoAnual := math.Round((100.0-churnMedioAnual)*100) / 100
+
+		baseAtual := 8252
+		clientesUnicosAtuais := 7850
+		if len(meses) > 0 {
+			last := meses[len(meses)-1]
+			baseAtual = last.BaseAtiva
+		}
+		totalSuspensosAtual := totalSuspensosAnual // Soma geral de todas as coortes mensais de suspensos
+		_ = dbPool.QueryRow(ctx, "SELECT COUNT(DISTINCT codigo_cliente) FROM rbx_autenticacoes WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND ativo_em_outubro_2026").Scan(&clientesUnicosAtuais)
+
+		// Top cidades em instalações
+		type TopCidade struct {
+			Cidade     string  `json:"cidade"`
+			Total      int     `json:"total"`
+			Percentual float64 `json:"percentual"`
+		}
+		var topCidades []TopCidade
+		cityRows, errC := dbPool.Query(ctx, `
+			SELECT COALESCE(NULLIF(cidade, ''), 'Não informada') as cid, count(*) as qty 
+			FROM rbx_atendimentos_instalacoes 
+			WHERE mes_competencia LIKE $1 || '-%' AND mes_competencia <= $2
+			GROUP BY cid ORDER BY qty DESC LIMIT 6
+		`, year, maxMonth)
+		if errC == nil {
+			defer cityRows.Close()
+			for cityRows.Next() {
+				var cid string
+				var qty int
+				if err := cityRows.Scan(&cid, &qty); err == nil {
+					pct := 0.0
+					if totalSucessoAnual > 0 {
+						pct = math.Round((float64(qty)/float64(totalSucessoAnual))*1000) / 10
+					}
+					topCidades = append(topCidades, TopCidade{
+						Cidade:     cid,
+						Total:      qty,
+						Percentual: pct,
+					})
+				}
+			}
+		}
+
+		// Top cidades em suspensos
+		var topCidadesSuspensos []TopCidade
+		suspCityRows, errSC := dbPool.Query(ctx, `
+			SELECT 
+				COALESCE(NULLIF(e.cidade, ''), NULLIF(cl.cidade, ''), 'Não informada') as cid, 
+				count(*) as qty 
+			FROM eventos_bloqueio e 
+			JOIN clientes cl ON cl.codigo_rbx = e.codigo_rbx 
+			WHERE e.mes_competencia LIKE $1 || '-%' AND e.mes_competencia <= $2 
+			  AND NOT e.eh_mimo 
+			  AND e.status_desfecho = 'suspended' 
+			  AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL) 
+			GROUP BY cid ORDER BY qty DESC LIMIT 6
+		`, year, maxMonth)
+		if errSC == nil {
+			defer suspCityRows.Close()
+			for suspCityRows.Next() {
+				var cid string
+				var qty int
+				if err := suspCityRows.Scan(&cid, &qty); err == nil {
+					pct := 0.0
+					if totalSuspensosAnual > 0 {
+						pct = math.Round((float64(qty)/float64(totalSuspensosAnual))*1000) / 10
+					}
+					topCidadesSuspensos = append(topCidadesSuspensos, TopCidade{
+						Cidade:     cid,
+						Total:      qty,
+						Percentual: pct,
+					})
+				}
+			}
+		}
+
+		// Top cidades em cancelamentos
+		var topCidadesCancelamentos []TopCidade
+		cancCityRows, errCC := dbPool.Query(ctx, `
+			WITH canc AS (
+				SELECT 
+					c.numero_contrato,
+					CASE 
+						WHEN c.cidade ILIKE '%PIRABAS%' OR cl.cidade ILIKE '%PIRABAS%' OR a.grupo_cliente ILIKE '%PIRABAS%' OR a.grupo_cliente ILIKE '%SJP%' THEN 'São João de Pirabas'
+						WHEN c.cidade ILIKE '%PRIMAVERA%' OR cl.cidade ILIKE '%PRIMAVERA%' OR a.grupo_cliente ILIKE '%PRIMAVERA%' OR a.grupo_cliente ILIKE '%PMV%' THEN 'Primavera'
+						WHEN c.cidade ILIKE '%QUATIPURU%' OR cl.cidade ILIKE '%QUATIPURU%' OR a.grupo_cliente ILIKE '%QUATIPURU%' OR a.grupo_cliente ILIKE '%QT%' THEN 'Quatipuru'
+						WHEN c.cidade ILIKE '%MAGALH%' OR cl.cidade ILIKE '%MAGALH%' OR a.grupo_cliente ILIKE '%MAGALH%' OR a.grupo_cliente ILIKE '%MB)%' THEN 'Magalhães Barata'
+						WHEN c.cidade ILIKE '%SANTAR%' OR cl.cidade ILIKE '%SANTAR%' OR a.grupo_cliente ILIKE '%SANTAR%' OR a.grupo_cliente ILIKE '%STN%' THEN 'Santarém Novo'
+						WHEN c.cidade ILIKE '%MARACAN%' OR cl.cidade ILIKE '%MARACAN%' OR a.grupo_cliente ILIKE '%MARACAN%' OR a.grupo_cliente ILIKE '%MRC%' THEN 'Maracanã'
+						WHEN c.cidade ILIKE '%SALIN%' OR cl.cidade ILIKE '%SALIN%' OR a.grupo_cliente ILIKE '%SALIN%' OR a.grupo_cliente ILIKE '%SAL%' THEN 'Salinópolis'
+						WHEN c.cidade ILIKE '%BOA VISTA%' OR cl.cidade ILIKE '%BOA VISTA%' OR a.grupo_cliente ILIKE '%BOA VISTA%' OR a.grupo_cliente ILIKE '%BV)%' THEN 'Boa Vista'
+						WHEN c.cidade ILIKE '%MARAPANIM%' OR cl.cidade ILIKE '%MARAPANIM%' OR a.grupo_cliente ILIKE '%MARAPANIM%' OR a.grupo_cliente ILIKE '%MRP%' THEN 'Marapanim'
+						WHEN COALESCE(NULLIF(c.cidade, ''), NULLIF(cl.cidade, ''), '') != '' THEN INITCAP(LOWER(COALESCE(NULLIF(c.cidade, ''), NULLIF(cl.cidade, ''))))
+						ELSE 'Outras / Não informada'
+					END as cid
+				FROM rbx_contratos_cancelados c
+				LEFT JOIN clientes cl ON cl.codigo_rbx = c.codigo_cliente
+				LEFT JOIN (
+					SELECT numero_contrato, (array_agg(grupo_cliente))[1] as grupo_cliente 
+					FROM rbx_autenticacoes 
+					GROUP BY numero_contrato
+				) a ON a.numero_contrato = c.numero_contrato
+				WHERE c.mes_competencia LIKE $1 || '-%' AND c.mes_competencia <= $2
+				  AND c.motivo_cancelamento NOT ILIKE '%MUD%TITULARIDADE%'
+				  AND c.motivo_cancelamento NOT ILIKE '%AJUSTE T%CNICO%'
+				  AND c.motivo_cancelamento NOT ILIKE '%CONTRATO TEMPOR%RIO%'
+				  AND c.motivo_cancelamento NOT ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+				  AND c.motivo_cancelamento NOT ILIKE '%ERRO%GERA%O%CONTRATO%'
+				  AND c.motivo_cancelamento NOT ILIKE '%CANCELAMENTO%MIGRA%'
+				  AND c.motivo_cancelamento NOT ILIKE '%N%O PAGOU A TAXA%'
+				  AND c.motivo_cancelamento NOT ILIKE '%NAO PAGOU A TAXA%'
+				  AND c.motivo_cancelamento NOT ILIKE '%INVIA%'
+				  AND NOT (
+					  c.plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+					  OR c.plano ILIKE '%+ TV%'
+					  OR c.plano ILIKE '%+TV%'
+					  OR c.plano ILIKE '%TELEVIS%'
+					  OR c.plano ILIKE '%IPTV%'
+				  )
+			)
+			SELECT cid, count(*) as qty 
+			FROM canc 
+			GROUP BY cid 
+			ORDER BY qty DESC LIMIT 6
+		`, year, maxMonth)
+		if errCC == nil {
+			defer cancCityRows.Close()
+			for cancCityRows.Next() {
+				var cid string
+				var qty int
+				if err := cancCityRows.Scan(&cid, &qty); err == nil {
+					pct := 0.0
+					if totalCancAnual > 0 {
+						pct = math.Round((float64(qty)/float64(totalCancAnual))*1000) / 10
+					}
+					topCidadesCancelamentos = append(topCidadesCancelamentos, TopCidade{
+						Cidade:     cid,
+						Total:      qty,
+						Percentual: pct,
+					})
+				}
+			}
+		}
+
+		if topCidades == nil {
+			topCidades = []TopCidade{}
+		}
+		if topCidadesSuspensos == nil {
+			topCidadesSuspensos = []TopCidade{}
+		}
+		if topCidadesCancelamentos == nil {
+			topCidadesCancelamentos = []TopCidade{}
+		}
+
+		// Top motivos de cancelamento
+		type TopMotivo struct {
+			Motivo     string  `json:"motivo"`
+			Total      int     `json:"total"`
+			Percentual float64 `json:"percentual"`
+		}
+		var topMotivos []TopMotivo
+		motRows, errM := dbPool.Query(ctx, `
+			SELECT motivo_cancelamento as mot, count(*) as qty 
+			FROM rbx_contratos_cancelados 
+			WHERE mes_competencia LIKE $1 || '-%' AND mes_competencia <= $2
+			  AND motivo_cancelamento NOT ILIKE '%MUD%TITULARIDADE%'
+			  AND motivo_cancelamento NOT ILIKE '%AJUSTE T%CNICO%'
+			  AND motivo_cancelamento NOT ILIKE '%CONTRATO TEMPOR%RIO%'
+			  AND motivo_cancelamento NOT ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+			  AND motivo_cancelamento NOT ILIKE '%ERRO%GERA%O%CONTRATO%'
+			  AND motivo_cancelamento NOT ILIKE '%CANCELAMENTO%MIGRA%'
+			  AND motivo_cancelamento NOT ILIKE '%N%O PAGOU A TAXA%'
+			  AND motivo_cancelamento NOT ILIKE '%NAO PAGOU A TAXA%'
+			  AND motivo_cancelamento NOT ILIKE '%INVIA%'
+			GROUP BY mot ORDER BY qty DESC LIMIT 6
+		`, year, maxMonth)
+		if errM == nil {
+			defer motRows.Close()
+			for motRows.Next() {
+				var mot string
+				var qty int
+				if err := motRows.Scan(&mot, &qty); err == nil {
+					pct := 0.0
+					if totalCancAnual > 0 {
+						pct = math.Round((float64(qty)/float64(totalCancAnual))*1000) / 10
+					}
+					cleanMot := strings.Trim(mot, "()")
+					topMotivos = append(topMotivos, TopMotivo{
+						Motivo:     cleanMot,
+						Total:      qty,
+						Percentual: pct,
+					})
+				}
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ano": year,
+			"kpis": map[string]interface{}{
+				"baseAtual":                baseAtual,
+				"clientesUnicosAtuais":     clientesUnicosAtuais,
+				"saldoLiquidoAnual":        saldoLiqAnual,
+				"totalInstalacoesAnual":    totalSucessoAnual,
+				"mediaMensalInstalacoes":   mediaMensalInstalacoes,
+				"totalCancelamentosAnual":  totalCancAnual,
+				"mediaMensalCancelamentos": mediaMensalCancelamentos,
+				"churnMedioAnual":          churnMedioAnual,
+				"totalSuspensosAtual":      totalSuspensosAtual,
+				"totalSuspensosAnual":      totalSuspensosAnual,
+				"mrrSuspensosTotal":        math.Round(totalMrrSuspensosAnual*100) / 100,
+				"mrrCanceladoTotal":        math.Round(totalMrrCanceladoAnual*100) / 100,
+				"taxaRetencaoAnual":        taxaRetencaoAnual,
+			},
+			"meses":                   meses,
+			"topCidadesInstalacoes":   topCidades,
+			"topCidadesSuspensos":     topCidadesSuspensos,
+			"topCidadesCancelamentos": topCidadesCancelamentos,
+			"topMotivosCancelamento":  topMotivos,
+		})
+	})
+
+	r.Get("/api/empresa/instalacoes", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-01"
+		}
+
+		ctx := r.Context()
+		rows, err := dbPool.Query(ctx, `
+			SELECT a.numero, a.protocolo, a.codigo_cliente, 
+			       COALESCE(NULLIF(a.nome_cliente, ''), c.nome, ''),
+			       COALESCE(a.contrato, ''),
+			       a.data_abertura, a.data_encerramento, COALESCE(a.situacao_os, ''),
+			       COALESCE(a.topico, ''), COALESCE(a.causa, ''), COALESCE(a.assunto, ''),
+			       COALESCE(a.solucao, ''), COALESCE(a.usuario_abertura, ''),
+			       a.instalado_com_sucesso,
+			       COALESCE(NULLIF(a.cidade, ''), c.cidade, ''),
+			       COALESCE(NULLIF(a.bairro, ''), c.bairro, '')
+			FROM rbx_atendimentos_instalacoes a
+			LEFT JOIN LATERAL (
+				SELECT c.nome, c.cidade, c.bairro 
+				FROM clientes c 
+				WHERE REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+				ORDER BY c.criado_em DESC
+				LIMIT 1
+			) c ON true
+			WHERE a.mes_competencia = $1 AND to_char(a.data_abertura, 'YYYY-MM') = $1
+			  AND a.solucao NOT ILIKE '%gerad%incorret%'
+			  AND a.solucao NOT ILIKE '%gerad%errad%'
+			  AND a.solucao NOT ILIKE '%gerad%indevid%'
+			  AND a.solucao NOT ILIKE '%aberto incorretamente%'
+			  AND a.solucao NOT ILIKE '%aberta incorretamente%'
+			  AND a.solucao NOT ILIKE '%abertura errada%'
+			  AND a.solucao NOT ILIKE '%abertura incorreta%'
+			  AND a.solucao NOT ILIKE '%fluxo incorreto%'
+			  AND a.solucao NOT ILIKE '%n%o era instala%'
+			  AND a.solucao NOT ILIKE '%como lentid%'
+			  AND a.solucao NOT ILIKE '%como reparo%'
+			  AND a.solucao NOT ILIKE '%como suporte%'
+			  AND a.solucao NOT ILIKE '%nao teve viabilida%'
+			  AND a.solucao NOT ILIKE '%não teve viabilida%'
+			  AND a.solucao NOT ILIKE '%sem viabilidade%'
+			  AND a.solucao NOT ILIKE '%cto muito longe%'
+			  AND a.solucao NOT ILIKE '%cto longe%'
+			  AND a.solucao NOT ILIKE '%inviabilidade técnica%'
+			  AND a.solucao NOT ILIKE '%inviabilidade tecnica%'
+			  AND a.solucao NOT ILIKE '%não foi possível instalar%'
+			  AND a.solucao NOT ILIKE '%nao foi possivel instalar%'
+			  AND a.solucao NOT ILIKE '%não foi instalad%'
+			  AND a.solucao NOT ILIKE '%nao foi instalad%'
+			  AND a.solucao NOT ILIKE '%não instalad%'
+			  AND a.solucao NOT ILIKE '%nao instalad%'
+			ORDER BY a.data_abertura DESC NULLS LAST
+		`, month)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type InstalacaoItem struct {
+			Numero              string     `json:"numero"`
+			Protocolo           string     `json:"protocolo"`
+			CodigoCliente       string     `json:"codigoCliente"`
+			NomeCliente         string     `json:"nomeCliente"`
+			Contrato            string     `json:"contrato"`
+			DataAbertura        *time.Time `json:"dataAbertura"`
+			DataEncerramento    *time.Time `json:"dataEncerramento"`
+			SituacaoOS          string     `json:"situacaoOS"`
+			Topico              string     `json:"topico"`
+			Causa               string     `json:"causa"`
+			Assunto             string     `json:"assunto"`
+			Solucao             string     `json:"solucao"`
+			UsuarioAbertura     string     `json:"usuarioAbertura"`
+			InstaladoComSucesso bool       `json:"instaladoComSucesso"`
+			Cidade              string     `json:"cidade"`
+			Bairro              string     `json:"bairro"`
+		}
+
+		var items []InstalacaoItem
+		for rows.Next() {
+			var it InstalacaoItem
+			if err := rows.Scan(
+				&it.Numero, &it.Protocolo, &it.CodigoCliente, &it.NomeCliente, &it.Contrato,
+				&it.DataAbertura, &it.DataEncerramento, &it.SituacaoOS,
+				&it.Topico, &it.Causa, &it.Assunto,
+				&it.Solucao, &it.UsuarioAbertura,
+				&it.InstaladoComSucesso, &it.Cidade, &it.Bairro,
+			); err == nil {
+				items = append(items, it)
+			}
+		}
+
+		if items == nil {
+			items = []InstalacaoItem{}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mesCompetencia": month,
+			"total":          len(items),
+			"instalacoes":    items,
+		})
+	})
+
+	r.Get("/api/empresa/cancelamentos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-01"
+		}
+
+		ctx := r.Context()
+		rows, err := dbPool.Query(ctx, `
+			SELECT numero_contrato, codigo_cliente, COALESCE(nome_cliente, ''),
+			       data_cancelamento, COALESCE(motivo_cancelamento, ''),
+			       COALESCE(plano, ''), valor_mensalidade,
+			       COALESCE(cidade, ''), COALESCE(bairro, '')
+			FROM rbx_contratos_cancelados
+			WHERE mes_competencia = $1
+			  AND motivo_cancelamento NOT ILIKE '%MUD%TITULARIDADE%'
+			  AND motivo_cancelamento NOT ILIKE '%AJUSTE T%CNICO%'
+			  AND motivo_cancelamento NOT ILIKE '%CONTRATO TEMPOR%RIO%'
+			  AND motivo_cancelamento NOT ILIKE '%PEDIDO INSTALA%O CANCELADO%'
+			  AND motivo_cancelamento NOT ILIKE '%ERRO%GERA%O%CONTRATO%'
+			  AND motivo_cancelamento NOT ILIKE '%CANCELAMENTO%MIGRA%'
+			  AND motivo_cancelamento NOT ILIKE '%N%O PAGOU A TAXA%'
+			  AND motivo_cancelamento NOT ILIKE '%NAO PAGOU A TAXA%'
+			  AND motivo_cancelamento NOT ILIKE '%INVIA%'
+			  AND NOT (
+			  	plano ~* '(^|[^a-zA-Z0-9])TV([^a-zA-Z0-9]|$)'
+			  	OR plano ILIKE '%+ TV%'
+			  	OR plano ILIKE '%+TV%'
+			  	OR plano ILIKE '%TELEVIS%'
+			  	OR plano ILIKE '%IPTV%'
+			  )
+			ORDER BY data_cancelamento DESC NULLS LAST
+		`, month)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type CanceladoItem struct {
+			NumeroContrato     string     `json:"numeroContrato"`
+			CodigoCliente      string     `json:"codigoCliente"`
+			NomeCliente        string     `json:"nomeCliente"`
+			DataCancelamento   *time.Time `json:"dataCancelamento"`
+			MotivoCancelamento string     `json:"motivoCancelamento"`
+			Plano              string     `json:"plano"`
+			ValorMensalidade   float64    `json:"valorMensalidade"`
+			Cidade             string     `json:"cidade"`
+			Bairro             string     `json:"bairro"`
+		}
+
+		var items []CanceladoItem
+		for rows.Next() {
+			var it CanceladoItem
+			if err := rows.Scan(
+				&it.NumeroContrato, &it.CodigoCliente, &it.NomeCliente,
+				&it.DataCancelamento, &it.MotivoCancelamento,
+				&it.Plano, &it.ValorMensalidade,
+				&it.Cidade, &it.Bairro,
+			); err == nil {
+				items = append(items, it)
+			}
+		}
+
+		if items == nil {
+			items = []CanceladoItem{}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mesCompetencia": month,
+			"total":          len(items),
+			"cancelamentos":  items,
+		})
+	})
+
+	r.Get("/api/empresa/inadimplentes", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-01"
+		}
+
+		ctx := r.Context()
+		rows, err := dbPool.Query(ctx, `
+			SELECT eb.contrato, eb.codigo_rbx, COALESCE(c.nome, ''),
+			       COALESCE(eb.cidade, ''), COALESCE(eb.bairro, ''),
+			       COALESCE(eb.plano, ''), eb.valor_mensalidade,
+			       eb.status_desfecho, COALESCE(eb.status_rbx_codigo, ''),
+			       COALESCE(eb.status_rbx_descricao, ''), COALESCE(eb.dias_vencido, 0)
+			FROM eventos_bloqueio eb
+			LEFT JOIN LATERAL (
+				SELECT c.nome 
+				FROM clientes c 
+				WHERE REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
+				ORDER BY c.criado_em DESC
+				LIMIT 1
+			) c ON true
+			WHERE eb.mes_competencia = $1 
+			  AND NOT eb.eh_mimo
+			  AND (eb.status_desfecho = 'blocked' OR eb.status_rbx_codigo IN ('B', 'P'))
+			  AND eb.status_rbx_codigo != 'S'
+			  AND eb.status_desfecho != 'suspended'
+			ORDER BY eb.valor_mensalidade DESC
+		`, month)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type InadimplenteItem struct {
+			Contrato           string  `json:"contrato"`
+			CodigoRbx          string  `json:"codigoRbx"`
+			Nome               string  `json:"nome"`
+			Cidade             string  `json:"cidade"`
+			Bairro             string  `json:"bairro"`
+			Plano              string  `json:"plano"`
+			ValorMensalidade   float64 `json:"valorMensalidade"`
+			StatusDesfecho     string  `json:"statusDesfecho"`
+			StatusRbxCodigo    string  `json:"statusRbxCodigo"`
+			StatusRbxDescricao string  `json:"statusRbxDescricao"`
+			DiasVencido        int     `json:"diasVencido"`
+		}
+
+		var items []InadimplenteItem
+		for rows.Next() {
+			var it InadimplenteItem
+			if err := rows.Scan(
+				&it.Contrato, &it.CodigoRbx, &it.Nome,
+				&it.Cidade, &it.Bairro,
+				&it.Plano, &it.ValorMensalidade,
+				&it.StatusDesfecho, &it.StatusRbxCodigo,
+				&it.StatusRbxDescricao, &it.DiasVencido,
+			); err == nil {
+				items = append(items, it)
+			}
+		}
+
+		if items == nil {
+			items = []InadimplenteItem{}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mesCompetencia": month,
+			"total":          len(items),
+			"inadimplentes":  items,
+		})
+	})
+
+	// ROTAS DO MÓDULO DE AUTENTICAÇÕES & BASE HISTÓRICA RBX
+	r.Post("/api/rbx/autenticacoes/sync", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		var rbxURL, rbxToken, rbxVersion string
+		err := dbPool.QueryRow(ctx, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+		if err != nil || strings.TrimSpace(rbxURL) == "" || strings.TrimSpace(rbxToken) == "" {
+			http.Error(w, `{"error": "Integração RBX não configurada. Configure a URL e chave nas opções."}`, http.StatusBadRequest)
+			return
+		}
+
+		client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
+		result, err := syncRbxAutenticacoesBase(ctx, client)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao sincronizar autenticações do RBX: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"resumo":  result,
+		})
+	})
+
+	r.Get("/api/rbx/autenticacoes/resumo", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-10"
+		}
+
+		ctx := r.Context()
+		var total, central, gruposExcluidos, pppoeTotal, pppoeMes int
+		var mesAtivos, mesBloqueados, mesSuspensos, mesCancelados, mesOutros int
+		var grafanaTotal, grafanaAtivos, grafanaUpgrades, grafanaBloqueados int
+		var contratosAtivos, clientesUnicos int
+		var sincEm *time.Time
+
+		criadoCol := "criado_ate_outubro_2026"
+		ativoCol := "ativo_em_outubro_2026"
+		if month == "2026-09" {
+			criadoCol = "criado_ate_setembro_2026"
+			ativoCol = "ativo_em_setembro_2026"
+		} else if month == "2026-08" {
+			criadoCol = "criado_ate_agosto_2026"
+			ativoCol = "ativo_em_agosto_2026"
+		} else if month == "2026-07" {
+			criadoCol = "criado_ate_julho_2026"
+			ativoCol = "ativo_em_julho_2026"
+		} else if month == "2026-06" {
+			criadoCol = "criado_ate_junho_2026"
+			ativoCol = "ativo_em_junho_2026"
+		} else if month == "2026-05" {
+			criadoCol = "criado_ate_maio_2026"
+			ativoCol = "ativo_em_maio_2026"
+		} else if month == "2026-04" {
+			criadoCol = "criado_ate_abril_2026"
+			ativoCol = "ativo_em_abril_2026"
+		} else if month == "2026-03" {
+			criadoCol = "criado_ate_marco_2026"
+			ativoCol = "ativo_em_marco_2026"
+		} else if month == "2026-02" {
+			criadoCol = "criado_ate_fevereiro_2026"
+			ativoCol = "ativo_em_fevereiro_2026"
+		} else if month == "2026-01" {
+			criadoCol = "criado_ate_janeiro_2026"
+			ativoCol = "ativo_em_janeiro_2026"
+		}
+
+		query := fmt.Sprintf(`
+			SELECT 
+				COALESCE(COUNT(*), 0),
+				COALESCE(COUNT(*) FILTER (WHERE eh_central_assinante), 0),
+				COALESCE(COUNT(*) FILTER (WHERE eh_grupo_excluido), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo = 'A'), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo IN ('B', 'P')), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo = 'S'), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo = 'C'), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo NOT IN ('A', 'B', 'P', 'S', 'C')), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND NOT origem_upgrade AND situacao_codigo = 'A'), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND origem_upgrade), 0),
+				COALESCE(COUNT(*) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s AND situacao_codigo IN ('B', 'P')), 0),
+				COALESCE(COUNT(DISTINCT numero_contrato) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s), 0),
+				COALESCE(COUNT(DISTINCT codigo_cliente) FILTER (WHERE NOT eh_central_assinante AND NOT eh_grupo_excluido AND %s), 0),
+				MAX(sincronizado_em)
+			FROM rbx_autenticacoes
+		`, criadoCol, criadoCol, criadoCol, criadoCol, criadoCol, criadoCol, ativoCol, ativoCol, ativoCol, ativoCol, ativoCol, ativoCol)
+
+		_ = dbPool.QueryRow(ctx, query).Scan(&total, &central, &gruposExcluidos, &pppoeTotal, &pppoeMes,
+			&mesAtivos, &mesBloqueados, &mesSuspensos, &mesCancelados, &mesOutros,
+			&grafanaTotal, &grafanaAtivos, &grafanaUpgrades, &grafanaBloqueados,
+			&contratosAtivos, &clientesUnicos, &sincEm)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"mesCompetencia":         month,
+			"totalAutenticacoes":     total,
+			"centralAssinante":       central,
+			"gruposExcluidos":        gruposExcluidos,
+			"pppoeTotal":             pppoeTotal,
+			"pppoeAteJan2026":        pppoeMes,
+			"pppoeAteMes":            pppoeMes,
+			"baseConexoesGrafanaJan": grafanaTotal,
+			"baseConexoesGrafanaMes": grafanaTotal,
+			"contratosAtivos":        contratosAtivos,
+			"clientesUnicos":         clientesUnicos,
+			"grafanaDetalhamento": map[string]int{
+				"ativosContinuos":      grafanaAtivos,
+				"upgradesPosteriores":  grafanaUpgrades,
+				"bloqueadosConectados": grafanaBloqueados,
+			},
+			"statusJan": map[string]int{
+				"ativos":     mesAtivos,
+				"bloqueados": mesBloqueados,
+				"suspensos":  mesSuspensos,
+				"cancelados": mesCancelados,
+				"outros":     mesOutros,
+			},
+			"sincronizadoEm": sincEm,
+		})
+	})
+
+	r.Get("/api/rbx/autenticacoes", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if dbPool == nil {
+			http.Error(w, `{"error": "Banco de dados não disponível"}`, http.StatusInternalServerError)
+			return
+		}
+
+		month := r.URL.Query().Get("month")
+		if month == "" {
+			month = "2026-10"
+		}
+		criadoCol := "criado_ate_outubro_2026"
+		ativoCol := "ativo_em_outubro_2026"
+		situacaoCol := "situacao_em_outubro"
+		if month == "2026-09" {
+			criadoCol = "criado_ate_setembro_2026"
+			ativoCol = "ativo_em_setembro_2026"
+			situacaoCol = "situacao_em_setembro"
+		} else if month == "2026-08" {
+			criadoCol = "criado_ate_agosto_2026"
+			ativoCol = "ativo_em_agosto_2026"
+			situacaoCol = "situacao_em_agosto"
+		} else if month == "2026-07" {
+			criadoCol = "criado_ate_julho_2026"
+			ativoCol = "ativo_em_julho_2026"
+			situacaoCol = "situacao_em_julho"
+		} else if month == "2026-06" {
+			criadoCol = "criado_ate_junho_2026"
+			ativoCol = "ativo_em_junho_2026"
+			situacaoCol = "situacao_em_junho"
+		} else if month == "2026-05" {
+			criadoCol = "criado_ate_maio_2026"
+			ativoCol = "ativo_em_maio_2026"
+			situacaoCol = "situacao_em_maio"
+		} else if month == "2026-04" {
+			criadoCol = "criado_ate_abril_2026"
+			ativoCol = "ativo_em_abril_2026"
+			situacaoCol = "situacao_em_abril"
+		} else if month == "2026-03" {
+			criadoCol = "criado_ate_marco_2026"
+			ativoCol = "ativo_em_marco_2026"
+			situacaoCol = "situacao_em_marco"
+		} else if month == "2026-02" {
+			criadoCol = "criado_ate_fevereiro_2026"
+			ativoCol = "ativo_em_fevereiro_2026"
+			situacaoCol = "situacao_em_fevereiro"
+		} else if month == "2026-01" {
+			criadoCol = "criado_ate_janeiro_2026"
+			ativoCol = "ativo_em_janeiro_2026"
+			situacaoCol = "situacao_em_janeiro"
+		}
+
+		q := strings.TrimSpace(r.URL.Query().Get("q"))
+		apenasPPPoE := r.URL.Query().Get("apenas_pppoe") != "false" // default true
+		apenasJaneiro := r.URL.Query().Get("apenas_janeiro") == "true" || r.URL.Query().Get("apenas_mes") == "true"
+		apenasAtivosJan := r.URL.Query().Get("apenas_ativos_jan") == "true" || r.URL.Query().Get("apenas_ativos_mes") == "true"
+		apenasUpgrades := r.URL.Query().Get("apenas_upgrades") == "true"
+		apenasGruposExcluidos := r.URL.Query().Get("apenas_grupos_excluidos") == "true"
+		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+
+		pageStr := r.URL.Query().Get("page")
+		limitStr := r.URL.Query().Get("limit")
+
+		page := 1
+		limit := 20
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+		offset := (page - 1) * limit
+
+		whereParts := []string{"1=1"}
+		args := []interface{}{}
+		argIdx := 1
+
+		if apenasGruposExcluidos {
+			whereParts = append(whereParts, "eh_grupo_excluido = true")
+		} else if apenasPPPoE {
+			whereParts = append(whereParts, "NOT eh_central_assinante AND NOT eh_grupo_excluido")
+		}
+		if apenasJaneiro {
+			whereParts = append(whereParts, fmt.Sprintf("%s = true", criadoCol))
+		}
+		if apenasAtivosJan {
+			whereParts = append(whereParts, fmt.Sprintf("%s = true", ativoCol))
+		}
+		if apenasUpgrades {
+			whereParts = append(whereParts, "origem_upgrade = true")
+		}
+		if statusFilter != "" && statusFilter != "TODOS" {
+			whereParts = append(whereParts, fmt.Sprintf("situacao_codigo = $%d", argIdx))
+			args = append(args, statusFilter)
+			argIdx++
+		}
+		if q != "" {
+			likePattern := "%" + q + "%"
+			whereParts = append(whereParts, fmt.Sprintf("(usuario ILIKE $%d OR nome_cliente ILIKE $%d OR codigo_cliente ILIKE $%d OR numero_contrato ILIKE $%d OR nas ILIKE $%d OR mac ILIKE $%d OR contrato_anterior ILIKE $%d OR situacao_em_janeiro ILIKE $%d OR situacao_em_fevereiro ILIKE $%d OR situacao_em_marco ILIKE $%d OR situacao_em_abril ILIKE $%d OR situacao_em_maio ILIKE $%d OR situacao_em_junho ILIKE $%d OR situacao_em_julho ILIKE $%d OR situacao_em_agosto ILIKE $%d OR situacao_em_setembro ILIKE $%d OR situacao_em_outubro ILIKE $%d OR grupo_cliente ILIKE $%d)", argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx, argIdx))
+			args = append(args, likePattern)
+			argIdx++
+		}
+
+		whereClause := strings.Join(whereParts, " AND ")
+
+		ctx := r.Context()
+		var total int
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM rbx_autenticacoes WHERE %s", whereClause)
+		_ = dbPool.QueryRow(ctx, countQuery, args...).Scan(&total)
+
+		selectQuery := fmt.Sprintf(`
+			SELECT id_autenticacao, codigo_cliente, COALESCE(nome_cliente, ''),
+			       numero_contrato, nas, porta, usuario, mac, observacao,
+			       eh_central_assinante, data_assinatura, data_inicio,
+			       situacao_codigo, COALESCE(situacao_descricao, ''),
+			       data_ultima_operacao, %s,
+			       %s, origem_upgrade, COALESCE(contrato_anterior, ''),
+			       COALESCE(%s, ''), COALESCE(grupo_cliente, ''),
+			       eh_grupo_excluido, sincronizado_em
+			FROM rbx_autenticacoes
+			WHERE %s
+			ORDER BY 
+				CASE WHEN %s THEN 0 ELSE 1 END,
+				CASE WHEN %s THEN 0 ELSE 1 END,
+				CASE situacao_codigo WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'S' THEN 3 WHEN 'C' THEN 4 ELSE 5 END,
+				id_autenticacao::bigint DESC
+			LIMIT $%d OFFSET $%d
+		`, criadoCol, ativoCol, situacaoCol, whereClause, ativoCol, criadoCol, argIdx, argIdx+1)
+
+		args = append(args, limit, offset)
+
+		rows, err := dbPool.Query(ctx, selectQuery, args...)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type AutenticacaoRow struct {
+			ID                 string     `json:"id"`
+			CodigoCliente      string     `json:"codigoCliente"`
+			NomeCliente        string     `json:"nomeCliente"`
+			NumeroContrato     string     `json:"numeroContrato"`
+			NAS                string     `json:"nas"`
+			Porta              string     `json:"porta"`
+			Usuario            string     `json:"usuario"`
+			MAC                string     `json:"mac"`
+			Observacao         string     `json:"observacao"`
+			EhCentralAssinante bool       `json:"ehCentralAssinante"`
+			DataAssinatura     *time.Time `json:"dataAssinatura"`
+			DataInicio         *time.Time `json:"dataInicio"`
+			SituacaoCodigo     string     `json:"situacaoCodigo"`
+			SituacaoDescricao  string     `json:"situacaoDescricao"`
+			DataUltimaOperacao *time.Time `json:"dataUltimaOperacao"`
+			CriadoAteJan2026   bool       `json:"criadoAteJaneiro2026"`
+			AtivoEmJan2026     bool       `json:"ativoEmJaneiro2026"`
+			OrigemUpgrade      bool       `json:"origemUpgrade"`
+			ContratoAnterior   string     `json:"contratoAnterior"`
+			SituacaoEmJan      string     `json:"situacaoEmJaneiro"`
+			GrupoCliente       string     `json:"grupoCliente"`
+			EhGrupoExcluido    bool       `json:"ehGrupoExcluido"`
+			SincronizadoEm     *time.Time `json:"sincronizadoEm"`
+		}
+
+		var items []AutenticacaoRow
+		for rows.Next() {
+			var it AutenticacaoRow
+			if err := rows.Scan(
+				&it.ID, &it.CodigoCliente, &it.NomeCliente,
+				&it.NumeroContrato, &it.NAS, &it.Porta, &it.Usuario, &it.MAC, &it.Observacao,
+				&it.EhCentralAssinante, &it.DataAssinatura, &it.DataInicio,
+				&it.SituacaoCodigo, &it.SituacaoDescricao,
+				&it.DataUltimaOperacao, &it.CriadoAteJan2026,
+				&it.AtivoEmJan2026, &it.OrigemUpgrade, &it.ContratoAnterior,
+				&it.SituacaoEmJan, &it.GrupoCliente, &it.EhGrupoExcluido,
+				&it.SincronizadoEm,
+			); err == nil {
+				items = append(items, it)
+			}
+		}
+
+		if items == nil {
+			items = []AutenticacaoRow{}
+		}
+
+		totalPages := (total + limit - 1) / limit
+		if totalPages == 0 {
+			totalPages = 1
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"total":      total,
+			"page":       page,
+			"limit":      limit,
+			"totalPages": totalPages,
+			"items":      items,
 		})
 	})
 
