@@ -975,6 +975,14 @@ func startBackgroundSyncScheduler() {
 					log.Printf("[Scheduler SUCESSO] Base de autenticações RBX sincronizada automaticamente (%d total, %d PPPoE).",
 						resAuth["totalAutenticacoes"], resAuth["pppoeTotal"])
 				}
+
+				// 3. Sincroniza atendimentos de retirada de equipamentos do RBX
+				resEquip, errEquip := syncAtendimentosEquipamentos(ctxOp, client)
+				if errEquip != nil {
+					log.Printf("[Scheduler ERROR] Falha na sincronização de equipamentos: %v", errEquip)
+				} else {
+					log.Printf("[Scheduler SUCESSO] Atendimentos de equipamentos sincronizados automaticamente (%d registros atualizados).", resEquip)
+				}
 			}
 			cancelOp()
 
