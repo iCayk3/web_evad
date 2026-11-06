@@ -3878,7 +3878,7 @@ func main() {
 				FROM atendimentos_equipamentos a
 				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
 				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
-				WHERE (a.mes_competencia = $1 OR (a.data_abertura >= ec.data_bloqueio - interval '15 days' AND a.data_abertura <= ec.data_bloqueio + interval '120 days'))
+				WHERE (a.mes_competencia = $1 OR a.data_abertura >= ec.data_bloqueio - interval '30 days')
 			),
 			atends AS (
 				SELECT 
@@ -3939,7 +3939,7 @@ func main() {
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
 					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
-					    AND (ae.mes_competencia = $1 OR (ae.data_abertura >= ec.data_bloqueio - interval '15 days' AND ae.data_abertura <= ec.data_bloqueio + interval '120 days'))
+					    AND (ae.mes_competencia = $1 OR ae.data_abertura >= ec.data_bloqueio - interval '30 days')
 				  )
 				ORDER BY ec.codigo_clean, 
 				         CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
@@ -4180,7 +4180,7 @@ func main() {
 				FROM atendimentos_equipamentos a
 				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
 				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
-				WHERE (a.mes_competencia = ec.mes_competencia OR (a.data_abertura >= ec.data_bloqueio - interval '15 days' AND a.data_abertura <= ec.data_bloqueio + interval '120 days'))
+				WHERE (a.mes_competencia = ec.mes_competencia OR a.data_abertura >= ec.data_bloqueio - interval '30 days')
 			),
 			atends AS (
 				SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade
@@ -4215,7 +4215,7 @@ func main() {
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
 					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
-					    AND (ae.mes_competencia = ec.mes_competencia OR (ae.data_abertura >= ec.data_bloqueio - interval '15 days' AND ae.data_abertura <= ec.data_bloqueio + interval '120 days'))
+					    AND (ae.mes_competencia = ec.mes_competencia OR ae.data_abertura >= ec.data_bloqueio - interval '30 days')
 				  )
 			),
 			all_items AS (
