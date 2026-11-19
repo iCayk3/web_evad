@@ -32,6 +32,27 @@ import {
   CheckCircle2,
   XCircle
 } from 'lucide-react';
+import { CommercialPage } from './features/commercial/CommercialPage';
+import { OsAnalyticsPage } from './features/os-analytics/OsAnalyticsPage';
+import { GestaoDashboardPage } from './features/gestao/GestaoDashboardPage';
+import { OmnichannelPage } from './features/omnichannel/OmnichannelPage';
+import { AtendimentosPage } from './features/atendimentos/AtendimentosPage';
+import { ClientesPage } from './features/clientes/ClientesPage';
+import { AuditPage } from './features/audit/AuditPage';
+
+const menuTitleMap: Record<MainMenuOption, string> = {
+  empresa: 'Minha Empresa',
+  autenticacoes: 'Base & Autenticações RBX',
+  recuperados: 'Clientes Recuperados',
+  commercial: 'CRM Comercial',
+  os_analytics: 'Análise de OS',
+  gestao: 'Painel de Gestão',
+  omnichannel: 'Omnichannel ISPCHAT',
+  atendimentos: 'Atendimentos',
+  clientes: 'Clientes RBX',
+  audit: 'Auditoria LGPD',
+};
+
 
 export function App() {
   // Menu Lateral: 'empresa' (1ª opção) ou 'recuperados' (2ª opção)
@@ -73,6 +94,20 @@ export function App() {
     if (menu === 'empresa') {
       setCompanyView('visao_anual');
     }
+  };
+
+  // Suporte a drill-down de Tickets e Clientes
+  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
+  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
+
+  const handleSelectTicket = (id: number) => {
+    setSelectedTicketId(id);
+    setMainMenu('atendimentos');
+  };
+
+  const handleSelectClient = (id: number) => {
+    setSelectedClientId(id);
+    setMainMenu('clientes');
   };
 
   // Módulo de Clientes Recuperados (Sub-abas e filtros)
@@ -219,7 +254,7 @@ export function App() {
             <span className="font-extrabold text-sm tracking-tight text-slate-900">EVAD</span>
             <span className="text-slate-300">•</span>
             <span className="text-xs font-semibold text-slate-600">
-              {mainMenu === 'empresa' ? 'Minha Empresa' : 'Clientes Recuperados'}
+              {menuTitleMap[mainMenu] || 'EVAD Pro'}
             </span>
           </div>
           <span className="text-[10px] font-bold bg-slate-900 px-2 py-0.5 rounded text-white uppercase">
@@ -575,6 +610,79 @@ export function App() {
                 />
               )}
             </main>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 4: CRM COMERCIAL & VENDAS                              */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'commercial' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <CommercialPage />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 5: ANÁLISE DE OS                                       */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'os_analytics' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <OsAnalyticsPage />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 6: PAINEL DE GESTÃO & SLA                              */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'gestao' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <GestaoDashboardPage
+              onSelectTicket={handleSelectTicket}
+              onNavigateToSettings={() => {}}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 7: OMNICHANNEL & ISPCHAT                               */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'omnichannel' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <OmnichannelPage />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 8: ATENDIMENTOS & FILA                                 */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'atendimentos' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <AtendimentosPage
+              selectedTicketId={selectedTicketId}
+              onClearSelectedTicket={() => setSelectedTicketId(null)}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 9: CLIENTES & HISTÓRICO                                */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'clientes' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <ClientesPage
+              selectedClientId={selectedClientId}
+              onClearSelectedClient={() => setSelectedClientId(null)}
+              onSelectTicket={handleSelectTicket}
+            />
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* MÓDULO 10: AUDITORIA LGPD                                     */}
+        {/* ------------------------------------------------------------- */}
+        {mainMenu === 'audit' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-[#F4F6F9] overflow-y-auto">
+            <AuditPage />
           </div>
         )}
 
