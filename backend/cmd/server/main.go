@@ -24,6 +24,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xuri/excelize/v2"
 
+	"evad-backend/internal/audit"
+	"evad-backend/internal/omnichannel"
 	"evad-backend/internal/rbx"
 )
 
@@ -155,30 +157,88 @@ type AnnualAnalyticsResponse struct {
 
 var dbPool *pgxpool.Pool
 
-func initDB() {
+func connectDB() bool {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://evad_user:evad_password@localhost:5433/evad_db?sslmode=disable"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	poolConfig, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		log.Printf("[PostgreSQL] Erro ao parsear configuração de conexão: %v", err)
+		return false
+	}
+
+	poolConfig.MaxConns = 30
+	poolConfig.MinConns = 5
+	poolConfig.MaxConnLifetime = 30 * time.Minute
+	poolConfig.MaxConnIdleTime = 5 * time.Minute
+	poolConfig.HealthCheckPeriod = 30 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		log.Printf("[PostgreSQL] Erro ao conectar: %v", err)
-		return
+		log.Printf("[PostgreSQL] Erro ao instanciar pool: %v", err)
+		return false
 	}
 
 	if err := pool.Ping(ctx); err != nil {
 		log.Printf("[PostgreSQL] Ping falhou: %v", err)
 		pool.Close()
-		return
+		return false
 	}
 
+	oldPool := dbPool
 	dbPool = pool
-	log.Println("[PostgreSQL] Conectado com sucesso ao banco evad_db na porta 5433!")
+	if oldPool != nil {
+		go func(p *pgxpool.Pool) {
+			time.Sleep(5 * time.Second)
+			p.Close()
+		}(oldPool)
+	}
 
+	log.Println("[PostgreSQL] Conexão com o banco estabelecida com sucesso!")
+	runMigrations(ctx, pool)
+	audit.Init(pool)
+	return true
+}
+
+func initDB() {
+	log.Println("[PostgreSQL] Inicializando conexão com o banco de dados...")
+	for attempt := 1; attempt <= 10; attempt++ {
+		if connectDB() {
+			log.Printf("[PostgreSQL] Conectado na tentativa %d/10.", attempt)
+			return
+		}
+		log.Printf("[PostgreSQL] Tentativa %d/10 falhou. Aguardando 2s antes de tentar novamente...", attempt)
+		time.Sleep(2 * time.Second)
+	}
+	log.Println("[PostgreSQL WARN] Conexão inicial não estabelecida após 10 tentativas. O monitor em segundo plano continuará tentando.")
+}
+
+func startDBHealthMonitor() {
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if dbPool == nil {
+				log.Println("[PostgreSQL Monitor] dbPool está nulo. Tentando reconectar...")
+				connectDB()
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := dbPool.Ping(ctx); err != nil {
+				log.Printf("[PostgreSQL Monitor] Ping falhou (%v). Reconectando...", err)
+				connectDB()
+			}
+			cancel()
+		}
+	}()
+}
+
+func runMigrations(ctx context.Context, pool *pgxpool.Pool) {
 	// Auto-migrations para garantir todas as colunas necessárias
 	_, _ = pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent;`)
 
@@ -203,6 +263,10 @@ func initDB() {
 		`CREATE INDEX IF NOT EXISTS idx_bloqueio_distrito ON eventos_bloqueio(distrito);`,
 		`CREATE INDEX IF NOT EXISTS idx_bloqueio_eh_mimo ON eventos_bloqueio(eh_mimo);`,
 		`CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_principal ON eventos_bloqueio(contrato_principal);`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_contrato_clean ON eventos_bloqueio (REPLACE(REPLACE(contrato, '.', ''), ',', ''));`,
+		`CREATE INDEX IF NOT EXISTS idx_bloqueio_codcli_clean ON eventos_bloqueio (REPLACE(REPLACE(codigo_rbx, '.', ''), ',', ''));`,
+		`CREATE INDEX IF NOT EXISTS idx_clientes_codcli_clean ON clientes (REPLACE(REPLACE(codigo_rbx, '.', ''), ',', ''));`,
+		`CREATE INDEX IF NOT EXISTS idx_clientes_contrato_clean ON clientes (REPLACE(REPLACE(contrato, '.', ''), ',', ''));`,
 	}
 	for _, stmt := range migrationStatements {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
@@ -281,6 +345,9 @@ func initDB() {
 		CREATE INDEX IF NOT EXISTS idx_rbx_inst_competencia ON rbx_atendimentos_instalacoes(mes_competencia);
 		CREATE INDEX IF NOT EXISTS idx_rbx_inst_sucesso ON rbx_atendimentos_instalacoes(instalado_com_sucesso);
 		CREATE INDEX IF NOT EXISTS idx_rbx_inst_cliente ON rbx_atendimentos_instalacoes(codigo_cliente);
+		ALTER TABLE rbx_atendimentos_instalacoes ADD COLUMN IF NOT EXISTS vendedor VARCHAR(100);
+		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS usuario_inclusao VARCHAR(100);
+		ALTER TABLE clientes ADD COLUMN IF NOT EXISTS vendedor VARCHAR(100);
 
 		CREATE TABLE IF NOT EXISTS rbx_contratos_cancelados (
 			numero_contrato VARCHAR(50) PRIMARY KEY,
@@ -467,6 +534,11 @@ func initDB() {
 			  AND (e.eh_debito_herdado IS FALSE OR e.eh_debito_herdado IS NULL)
 		), 0);
 	`)
+
+	// Inicializa tabelas e índices do Omnichannel Analytics (Fase 3 - ISPCHAT e Saúde do Cliente)
+	if err := omnichannel.InitSchema(ctx, pool); err != nil {
+		log.Printf("[Omnichannel] Erro ao inicializar schema: %v", err)
+	}
 }
 
 var inMemoryClients = make([]ClientRecord, 0)
@@ -919,14 +991,18 @@ func startBackgroundSyncScheduler() {
 
 			time.Sleep(duration)
 
-			if dbPool != nil {
-				var autoSync bool
-				err := dbPool.QueryRow(context.Background(), "SELECT auto_sync FROM configuracoes_rbx WHERE id = 1").Scan(&autoSync)
-				if err == nil && !autoSync {
-					log.Println("[Scheduler] Sincronização automática desativada nas configurações. Aguardando próximo ciclo.")
-					time.Sleep(1 * time.Minute)
-					continue
-				}
+			if dbPool == nil {
+				log.Println("[Scheduler WARN] Banco de dados não conectado. Aguardando 1 minuto antes de tentar novamente.")
+				time.Sleep(1 * time.Minute)
+				continue
+			}
+
+			var autoSync bool
+			err := dbPool.QueryRow(context.Background(), "SELECT auto_sync FROM configuracoes_rbx WHERE id = 1").Scan(&autoSync)
+			if err == nil && !autoSync {
+				log.Println("[Scheduler] Sincronização automática desativada nas configurações. Aguardando próximo ciclo.")
+				time.Sleep(1 * time.Minute)
+				continue
 			}
 
 			log.Printf("[Scheduler] Executando rotina delta programada das %s...", time.Now().Format("15:04"))
@@ -943,9 +1019,10 @@ func startBackgroundSyncScheduler() {
 			// Rotina Automática em Produção: Sincronização operacional e base de autenticações
 			currentMonth := time.Now().Format("2006-01")
 			ctxOp, cancelOp := context.WithTimeout(context.Background(), 20*time.Minute)
-			var rbxURL, rbxToken, rbxVersion string
-			errCfg := dbPool.QueryRow(ctxOp, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
-			if errCfg == nil && strings.TrimSpace(rbxURL) != "" && strings.TrimSpace(rbxToken) != "" {
+			if dbPool != nil {
+				var rbxURL, rbxToken, rbxVersion string
+				errCfg := dbPool.QueryRow(ctxOp, "SELECT rbx_url, rbx_token, rbx_version FROM configuracoes_rbx WHERE id = 1").Scan(&rbxURL, &rbxToken, &rbxVersion)
+				if errCfg == nil && strings.TrimSpace(rbxURL) != "" && strings.TrimSpace(rbxToken) != "" {
 				client := rbx.NewClient(rbx.Config{URL: rbxURL, Token: rbxToken, Version: rbxVersion})
 
 				// 1. Sincroniza dados operacionais da empresa (Instalações, Cancelamentos, Bloqueados)
@@ -983,6 +1060,7 @@ func startBackgroundSyncScheduler() {
 				} else {
 					log.Printf("[Scheduler SUCESSO] Atendimentos de equipamentos sincronizados automaticamente (%d registros atualizados).", resEquip)
 				}
+			}
 			}
 			cancelOp()
 
@@ -1884,40 +1962,163 @@ func extractEquipmentInfo(assunto, solucao string) (string, string) {
 }
 
 func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.Time) string {
-	c := strings.ToUpper(causa)
-	s := strings.ToUpper(solucao)
+	c := strings.ToUpper(strings.TrimSpace(causa))
+	s := strings.ToUpper(strings.TrimSpace(solucao))
+	full := c + " " + s
 
-	if strings.Contains(c, "DESISTIU") || strings.Contains(s, "DESISTIU") {
+	// 1. Cancelamento abortado / Reativação / Débito Quitado com Continuidade (Ativo Cobrança)
+	isReativacao := strings.Contains(full, "DESISTIU") ||
+		strings.Contains(full, "REATIVAÇÃO") ||
+		strings.Contains(full, "REATIVACAO") ||
+		strings.Contains(full, "REATIVOU") ||
+		strings.Contains(full, "DÉBITO REGULARIZADO") ||
+		strings.Contains(full, "DEBITO REGULARIZADO") ||
+		strings.Contains(full, "DÉBITO QUITADO") ||
+		strings.Contains(full, "DEBITO QUITADO") ||
+		strings.Contains(full, "PAGOU DÉBITO E REATIVOU") ||
+		strings.Contains(full, "PAGOU DEBITO E REATIVOU") ||
+		strings.Contains(full, "PAGOU E REATIVOU") ||
+		strings.Contains(full, "RETORNOU E ATIVOU") ||
+		strings.Contains(full, "RETORNOU E REATIVOU") ||
+		strings.Contains(full, "REGULARIZOU E REATIVOU") ||
+		strings.Contains(full, "CONTINUARA USANDO") ||
+		strings.Contains(full, "CONTINUARÁ USANDO") ||
+		strings.Contains(full, "TROCA DE TITULARIDADE") ||
+		((strings.Contains(s, "PAGAMENTO REALIZADO") || strings.Contains(s, "PAGOU NO ESCRITORIO") || strings.Contains(s, "PAGOU NO ESCRITÓRIO") || strings.Contains(s, "QUITOU SEU DÉBITO")) &&
+			!strings.Contains(s, "CANCELOU") && !strings.Contains(s, "CANCELAR"))
+
+	if isReativacao {
 		return "cancelamento_abortado"
 	}
 
-	if strings.Contains(c, "INTERROMPIDO") ||
-		strings.Contains(c, "ABORTADO") ||
-		strings.Contains(s, "NINGUÉM") ||
-		strings.Contains(s, "NINGUEM") ||
-		strings.Contains(s, "NUNCA SE ENCONTRA") ||
-		strings.Contains(s, "NÃO SE ENCONTRA") ||
-		strings.Contains(s, "NAO SE ENCONTRA") ||
-		strings.Contains(s, "RECUSOU") {
-		return "pendente"
+	// 2. Equipamento Perdido / Inviabilidade de Recuperação / Sumiu / Recusou / Extraviado / Mudou e Levou
+	isPerdidoCausa := strings.Contains(c, "EQUIPAMENTO PERDIDO") ||
+		strings.Contains(c, "EQUIPAMENTO DE RETIRADA SUMIU") ||
+		strings.Contains(c, "FOI EMBORA") ||
+		strings.Contains(c, "CLIENTE SE RECUSA") ||
+		strings.Contains(c, "EQUIPAMENTO NÃO RETIRADO") ||
+		strings.Contains(c, "EQUIPAMENTO NAO RETIRADO") ||
+		strings.Contains(c, "EXTRAVIADO") ||
+		strings.Contains(c, "PERDIDO") ||
+		strings.Contains(c, "SUMIU")
+
+	isPerdidoSolucao := strings.Contains(s, "EQUIPAMENTO PERDIDO") ||
+		strings.Contains(s, "EQUIPAMENTOS PERDIDOS") ||
+		strings.Contains(s, "EQUIPAMENTO SUMIU") ||
+		strings.Contains(s, "CLIENTE MUDOU") ||
+		strings.Contains(s, "MUDOU DE ENDEREÇO") ||
+		strings.Contains(s, "MUDOU DE ENDERECO") ||
+		strings.Contains(s, "NÃO MORA MAIS") ||
+		strings.Contains(s, "NAO MORA MAIS") ||
+		strings.Contains(s, "NÃO LOCALIZADO") ||
+		strings.Contains(s, "NAO LOCALIZADO") ||
+		strings.Contains(s, "NINGUÉM SOUBE") ||
+		strings.Contains(s, "NINGUEM SOUBE") ||
+		strings.Contains(s, "RECUSOU A ENTREGAR") ||
+		strings.Contains(s, "SE RECUSA A ENTREGAR") ||
+		strings.Contains(s, "NÃO QUIS ENTREGAR") ||
+		strings.Contains(s, "NAO QUIS ENTREGAR") ||
+		strings.Contains(s, "SE RECUSA A DEVOLVER") ||
+		strings.Contains(s, "NÃO DEVOLVEU") ||
+		strings.Contains(s, "NAO DEVOLVEU") ||
+		strings.Contains(s, "CASA DERRUBADA") ||
+		strings.Contains(s, "CASA ABANDONADA") ||
+		strings.Contains(s, "CLIENTE FOI PRESA") ||
+		strings.Contains(s, "CLIENTE FOI PRESO") ||
+		strings.Contains(s, "FURTADO") ||
+		strings.Contains(s, "ROUBADO") ||
+		strings.Contains(s, "QUEIMOU") ||
+		strings.Contains(s, "DANIFICADO SEM RECUPERAÇÃO") ||
+		strings.Contains(s, "JOGADO FORA") ||
+		(strings.Contains(s, "FOI EMBORA") && (strings.Contains(s, "ROTEADOR") || strings.Contains(s, "EQUIPAMENTO") || strings.Contains(s, "ONT") || strings.Contains(s, "LEVOU")))
+
+	hasConfirmacaoRecuperacao := strings.Contains(s, "EQUIPAMENTO RETIRADO") ||
+		strings.Contains(s, "EQUIPAMENTOS RETIRADOS") ||
+		strings.Contains(s, "EQUIPAMENTO COLETADO") ||
+		strings.Contains(s, "EQUIPAMENTOS COLETADOS") ||
+		strings.Contains(s, "COLETADO COM SUCESSO") ||
+		strings.Contains(s, "ENTREGUE NO ESCRITÓRIO") ||
+		strings.Contains(s, "ENTREGOU NO ESCRITÓRIO")
+
+	if (isPerdidoCausa || isPerdidoSolucao) && !hasConfirmacaoRecuperacao {
+		return "perdido"
 	}
 
-	if strings.Contains(c, "RETIRADO") ||
-		strings.Contains(c, "RECEBIDO") ||
-		strings.Contains(c, "CONFERIDO") ||
+	// 3. Equipamento Recuperado com sucesso
+	isRecuperadoCausa := strings.Contains(c, "EQUIP.. RETIRADO") ||
+		strings.Contains(c, "EQUIPAMENTO RETIRADO") ||
+		strings.Contains(c, "EQUIPAMENTO CONFERIDO") ||
+		strings.Contains(c, "EQUIPAMENTO DE RETIRADA RECEBIDO") ||
 		strings.Contains(c, "SUPERVISÃO OK") ||
 		strings.Contains(c, "SUPERVISAO OK") ||
+		strings.Contains(c, "RETIRADO / CTO DESCONECTADA") ||
+		strings.Contains(c, "EQUIPAMENTO RECOLHIDO") ||
+		strings.Contains(c, "EQUIPAMENTO TROCADO") ||
+		strings.Contains(c, "EQUIPAMENTO UTILIZADO") ||
+		strings.Contains(c, "MATERIAIS DEVOLVIDOS")
+
+	isRecuperadoSolucao := strings.Contains(s, "EQUIPAMENTO RETIRADO") ||
+		strings.Contains(s, "EQUIPAMENTOS RETIRADOS") ||
+		strings.Contains(s, "EQUIPAMENTOS RETIRADO") ||
 		strings.Contains(s, "RETIRADA DE UMA") ||
 		strings.Contains(s, "RETIRADA DE UM") ||
+		strings.Contains(s, "RETIRADO EQUIPAMENTO") ||
+		strings.Contains(s, "RETIRADOS EQUIPAMENTOS") ||
 		strings.Contains(s, "FOI FEITO A RETIRADA") ||
-		strings.Contains(s, "EQUIPAMENTO RECOLHIDO") {
+		strings.Contains(s, "FOI FEITA A RETIRADA") ||
+		strings.Contains(s, "EQUIPAMENTO RECOLHIDO") ||
+		strings.Contains(s, "EQUIPAMENTOS RECOLHIDOS") ||
+		strings.Contains(s, "EQUIPAMENTO COLETADO") ||
+		strings.Contains(s, "EQUIPAMENTOS COLETADOS") ||
+		strings.Contains(s, "COLETADO COM SUCESSO") ||
+		strings.Contains(s, "COLETADA COM SUCESSO") ||
+		strings.Contains(s, "ENTREGUE NO ESCRITÓRIO") ||
+		strings.Contains(s, "ENTREGUE NO ESCRITORIO") ||
+		strings.Contains(s, "ENTREGOU NO ESCRITÓRIO") ||
+		strings.Contains(s, "ENTREGOU NO ESCRITORIO") ||
+		strings.Contains(s, "ENTREGUE NA RECEPÇÃO") ||
+		strings.Contains(s, "ENTREGOU OS EQUIPAMENTOS") ||
+		strings.Contains(s, "DEVOLVEU O EQUIPAMENTO")
+
+	if isRecuperadoCausa || isRecuperadoSolucao {
 		return "recuperado"
 	}
 
+	// 4. Pendente / Tentando / Interrompido
+	isPendenteCausa := strings.Contains(c, "INTERROMPIDO") ||
+		strings.Contains(c, "ABORTADO") ||
+		strings.Contains(c, "AGENDAMENTO") ||
+		strings.Contains(c, "FALTA DE INTERAÇÃO") ||
+		strings.Contains(c, "FALTA MATERIAL") ||
+		strings.Contains(c, "NEGOCIADO COM O CLIENTE") ||
+		strings.Contains(c, "PROBLEMAS INTERNOS")
+
+	isPendenteSolucao := strings.Contains(s, "NINGUÉM") ||
+		strings.Contains(s, "NINGUEM") ||
+		strings.Contains(s, "FECHADO") ||
+		strings.Contains(s, "PORTÃO TRANCADO") ||
+		strings.Contains(s, "PORTAO TRANCADO") ||
+		strings.Contains(s, "NÃO SE ENCONTRA") ||
+		strings.Contains(s, "NAO SE ENCONTRA") ||
+		strings.Contains(s, "NUNCA SE ENCONTRA") ||
+		strings.Contains(s, "AUSENTE") ||
+		strings.Contains(s, "TENTAR NOVAMENTE") ||
+		strings.Contains(s, "RETORNAR MAIS TARDE") ||
+		strings.Contains(s, "AGUARDAR PAGAMENTO")
+
+	if isPendenteCausa || isPendenteSolucao {
+		if encerramento == nil {
+			return "em_andamento"
+		}
+		return "pendente"
+	}
+
+	// 5. Se não possui data de encerramento
 	if encerramento == nil {
 		return "em_andamento"
 	}
 
+	// 6. Concluída / Finalizada no RBX
 	if situacaoOS == "C" || situacaoOS == "F" {
 		return "recuperado"
 	}
@@ -2041,7 +2242,7 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 			}
 		}
 
-		// Propagar imediatamente as cidades e bairros atualizados para a tabela de eventos
+		// Propagar imediatamente as cidades e bairros atualizados para a tabela de eventos (apenas para os clientes atualizados)
 		_, _ = dbPool.Exec(ctx, `
 			UPDATE eventos_bloqueio eb
 			SET 
@@ -2049,7 +2250,8 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 				bairro = CASE WHEN c.bairro != '' AND c.bairro != 'Não Informado' THEN c.bairro ELSE eb.bairro END
 			FROM clientes c
 			WHERE REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') = REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '')
-		`)
+			  AND REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ANY($1)
+		`, cliCodesToRefresh)
 	}
 
 	log.Printf("[RBX EQUIPAMENTOS SYNC] Sincronização concluída: %d atendimentos e %d cadastros de endereços atualizados.", count, len(cliCodesToRefresh))
@@ -2205,9 +2407,12 @@ func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month st
 		reTopicoInstalacao := regexp.MustCompile(`(?i)(?:t[oó]pico:\s*\([^\)]*instala[cç][aã]o[^\)]*\)|instala[cç][aã]o\s+[a-z]{2,4}\b)`)
 		reCausaSucesso := regexp.MustCompile(`(?i)(?:instalado\s+com\s+sucesso|instala[cç][aã]o\s+conclu[ií]da)`)
 
+		reUsuarioAssunto := regexp.MustCompile(`(?i)/#\s*Usu[áa]rio:\s*([^\s#/]+)`)
+
 		type itemInstalacao struct {
 			at       rbx.AtendimentoRetiradaResult
 			contrato string
+			vendedor string
 			sucesso  bool
 		}
 		var matched []itemInstalacao
@@ -2329,9 +2534,16 @@ func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month st
 				contrato = contratoMatch[1]
 			}
 
+			userAssuntoMatch := reUsuarioAssunto.FindStringSubmatch(at.Assunto)
+			vendedorAssunto := ""
+			if len(userAssuntoMatch) > 1 {
+				vendedorAssunto = strings.TrimSpace(userAssuntoMatch[1])
+			}
+
 			matched = append(matched, itemInstalacao{
 				at:       at,
 				contrato: contrato,
+				vendedor: vendedorAssunto,
 				sucesso:  sucesso,
 			})
 
@@ -2353,32 +2565,48 @@ func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month st
 			}
 		}
 
-		// Limpa registros anteriores da competência para evitar lixo residual
-		_, _ = dbPool.Exec(ctx, "DELETE FROM rbx_atendimentos_instalacoes WHERE mes_competencia = $1", month)
-
+		// Upsert seguro dos atendimentos identificados (mantendo dados em caso de falha de conexão)
 		for _, item := range matched {
 			at := item.at
 			cleanCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(at.CodigoCliente), ".", ""), ",", "")
 			nomeCliente := ""
 			cidade := ""
 			bairro := ""
+			usuarioInclusao := ""
 
 			if details, ok := clientDetails[cleanCode]; ok {
 				nomeCliente = details.Name
 				cidade = details.City
 				bairro = details.Neighborhood
+				usuarioInclusao = details.UsuarioInclusao
+			}
+
+			// Prioridade de identificação do verdadeiro vendedor:
+			// 1) Usuário explicitamente gravado no corpo do chamado (/# Usuário: <nome> #/)
+			// 2) Usuário que cadastrou/incluiu a ficha do cliente no RBX (usuario de inclusão)
+			// 3) Se o usuario_abertura NÃO for routerbox, usa o próprio usuario_abertura
+			vendedorEfetivo := item.vendedor
+			if vendedorEfetivo == "" || strings.EqualFold(vendedorEfetivo, "routerbox") {
+				vendedorEfetivo = usuarioInclusao
+			}
+			if vendedorEfetivo == "" || strings.EqualFold(vendedorEfetivo, "routerbox") {
+				if !strings.EqualFold(at.UsuarioAbertura, "routerbox") {
+					vendedorEfetivo = at.UsuarioAbertura
+				}
 			}
 
 			// Se tivermos os dados cadastrais, grava também na tabela clientes para busca unificada
 			if nomeCliente != "" && cleanCode != "" {
 				_, _ = dbPool.Exec(ctx, `
-					INSERT INTO clientes (codigo_rbx, nome, cidade, bairro, status)
-					VALUES ($1, $2, $3, $4, 'ativo')
+					INSERT INTO clientes (codigo_rbx, nome, cidade, bairro, status, usuario_inclusao, vendedor)
+					VALUES ($1, $2, $3, $4, 'ativo', $5, $6)
 					ON CONFLICT (codigo_rbx) DO UPDATE SET
 						nome = CASE WHEN EXCLUDED.nome != '' THEN EXCLUDED.nome ELSE clientes.nome END,
 						cidade = CASE WHEN EXCLUDED.cidade != '' THEN EXCLUDED.cidade ELSE clientes.cidade END,
-						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END
-				`, cleanCode, nomeCliente, cidade, bairro)
+						bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE clientes.bairro END,
+						usuario_inclusao = CASE WHEN EXCLUDED.usuario_inclusao != '' THEN EXCLUDED.usuario_inclusao ELSE clientes.usuario_inclusao END,
+						vendedor = CASE WHEN EXCLUDED.vendedor != '' THEN EXCLUDED.vendedor ELSE clientes.vendedor END
+				`, cleanCode, nomeCliente, cidade, bairro, usuarioInclusao, vendedorEfetivo)
 			}
 
 			_, errIns := dbPool.Exec(ctx, `
@@ -2386,12 +2614,12 @@ func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month st
 					numero, protocolo, codigo_cliente, nome_cliente, contrato, mes_competencia,
 					data_abertura, data_encerramento, situacao_os,
 					topico, causa, assunto, solucao, usuario_abertura,
-					instalado_com_sucesso, cidade, bairro, sincronizado_em
+					instalado_com_sucesso, cidade, bairro, vendedor, sincronizado_em
 				) VALUES (
 					$1, $2, $3, $4, $5, $6,
 					$7, $8, $9,
 					$10, $11, $12, $13, $14,
-					$15, $16, $17, CURRENT_TIMESTAMP
+					$15, $16, $17, $18, CURRENT_TIMESTAMP
 				)
 				ON CONFLICT (numero) DO UPDATE SET
 					protocolo = EXCLUDED.protocolo,
@@ -2409,12 +2637,13 @@ func syncRbxOperacionalEmpresa(ctx context.Context, client *rbx.Client, month st
 					instalado_com_sucesso = EXCLUDED.instalado_com_sucesso,
 					cidade = CASE WHEN EXCLUDED.cidade != '' THEN EXCLUDED.cidade ELSE rbx_atendimentos_instalacoes.cidade END,
 					bairro = CASE WHEN EXCLUDED.bairro != '' THEN EXCLUDED.bairro ELSE rbx_atendimentos_instalacoes.bairro END,
+					vendedor = CASE WHEN EXCLUDED.vendedor != '' THEN EXCLUDED.vendedor ELSE rbx_atendimentos_instalacoes.vendedor END,
 					sincronizado_em = CURRENT_TIMESTAMP
 			`,
 				at.Numero, at.Protocolo, at.CodigoCliente, nomeCliente, item.contrato, month,
 				at.AberturaDataHora, at.EncerramentoDataHora, at.SituacaoOS,
 				at.Topico, at.Causa, at.Assunto, at.Solucao, at.UsuarioAbertura,
-				item.sucesso, cidade, bairro,
+				item.sucesso, cidade, bairro, vendedorEfetivo,
 			)
 
 			if errIns == nil {
@@ -2582,7 +2811,24 @@ func syncRbxAutenticacoesBase(ctx context.Context, client *rbx.Client) (map[stri
 	limiteSet := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 	limiteOut := time.Date(2026, 10, 31, 23, 59, 59, 0, time.UTC)
 
+	batchSize := 250
 	batch := &pgx.Batch{}
+	batchCount := 0
+
+	flushBatch := func() error {
+		if batchCount == 0 {
+			return nil
+		}
+		br := dbPool.SendBatch(ctx, batch)
+		for i := 0; i < batchCount; i++ {
+			if _, err := br.Exec(); err != nil {
+				_ = br.Close()
+				return err
+			}
+		}
+		return br.Close()
+	}
+
 	for _, a := range auths {
 		ehCentral := a.EhCentralAssinante
 		if ehCentral {
@@ -3369,16 +3615,21 @@ func syncRbxAutenticacoesBase(ctx context.Context, client *rbx.Client) (map[stri
 			criadoAteAgo, ativoEmAgo, situacaoEmAgo,
 			criadoAteSet, ativoEmSet, situacaoEmSet,
 			criadoAteOut, ativoEmOut, situacaoEmOut)
-	}
 
-	br := dbPool.SendBatch(ctx, batch)
-	for i := 0; i < len(auths); i++ {
-		if _, err := br.Exec(); err != nil {
-			log.Printf("[RBX AUTENTICACOES] Erro ao gravar lote item %d: %v", i, err)
-			break
+		batchCount++
+		if batchCount >= batchSize {
+			if err := flushBatch(); err != nil {
+				log.Printf("[RBX AUTENTICACOES] Erro ao gravar lote chunk: %v", err)
+				break
+			}
+			batch = &pgx.Batch{}
+			batchCount = 0
 		}
 	}
-	br.Close()
+
+	if err := flushBatch(); err != nil {
+		log.Printf("[RBX AUTENTICACOES] Erro ao gravar lote final: %v", err)
+	}
 
 	log.Printf("[RBX AUTENTICACOES] Sincronização concluída com sucesso: %d autenticações (%d PPPoE, %d até Jan, %d até Fev, %d até Mar, %d até Abr, %d até Mai, %d até Jun, %d até Jul, %d até Ago, %d até Set, %d até Out, %d grupos excluídos).",
 		totalAuths, totalPPPoE, totalPPPoEJan, totalPPPoEFev, totalPPPoEMar, totalPPPoEAbr, totalPPPoEMai, totalPPPoEJun, totalPPPoEJul, totalPPPoEAgo, totalPPPoESet, totalPPPoEOut, totalExcluidosGrupo)
@@ -3425,6 +3676,8 @@ func syncRbxAutenticacoesBase(ctx context.Context, client *rbx.Client) (map[stri
 
 func main() {
 	initDB()
+	audit.Init(dbPool)
+	startDBHealthMonitor()
 	startBackgroundSyncScheduler()
 
 	port := os.Getenv("PORT")
@@ -3461,6 +3714,57 @@ func main() {
 			"time":     time.Now().Format(time.RFC3339),
 		})
 	})
+
+	// Rota de Governança e Trilha de Auditoria Imutável (LGPD)
+	auditLogsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		module := r.URL.Query().Get("module")
+		action := r.URL.Query().Get("action")
+		username := r.URL.Query().Get("username")
+		limitStr := r.URL.Query().Get("limit")
+		offsetStr := r.URL.Query().Get("offset")
+
+		limit := 50
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+		offset := 0
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+
+		filter := audit.LogQueryFilter{
+			Module:   module,
+			Action:   action,
+			Username: username,
+			Limit:    limit,
+			Offset:   offset,
+		}
+
+		entries, total, err := audit.QueryLogs(r.Context(), filter)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "Erro ao consultar logs de auditoria: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"logs":   entries,
+			"total":  total,
+			"limit":  limit,
+			"offset": offset,
+		})
+	}
+	r.Get("/api/audit/logs", auditLogsHandler)
+	r.Get("/api/audit", auditLogsHandler)
+
+	// Registra rotas da Fase 2 (Analytics Operacional, SLA, OS Analytics e Atendimentos)
+	registerPhase2Routes(r)
+
+	// Registra rotas da Fase 3 (Omnichannel Analytics, ISPCHAT e Saúde do Cliente)
+	registerOmnichannelRoutes(r)
+
+	// Registra rotas da Fase 4 (CRM Comercial, Funil de Leads e Inteligência de Vendas)
+	registerSalesRoutes(r)
 
 	r.Get("/api/competencias", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -4023,6 +4327,8 @@ func main() {
 					item.StatusFinal = "sem_os"
 				case "em_andamento", "pendente":
 					item.StatusFinal = "tentando"
+				case "perdido":
+					item.StatusFinal = "perdido"
 				default:
 					item.StatusFinal = item.StatusRecuperacao
 				}
@@ -4225,6 +4531,7 @@ func main() {
 						WHEN aem.status_manual IS NOT NULL AND aem.status_manual != '' THEN aem.status_manual
 						WHEN u.status_recuperacao = 'cancelamento_abortado' THEN 'ativo_cobranca'
 						WHEN u.status_recuperacao IN ('em_andamento', 'pendente') THEN 'tentando'
+						WHEN u.status_recuperacao = 'perdido' THEN 'perdido'
 						ELSE u.status_recuperacao
 					END as status_final
 				FROM (
@@ -4449,6 +4756,19 @@ func main() {
 			}
 		}
 
+		audit.Log(audit.Entry{
+			Username: req.AtualizadoPor,
+			UserRole: "auditor",
+			Action:   "equipamento.classificar",
+			Module:   "equipamentos",
+			RecordID: req.RegistroID,
+			Details: map[string]interface{}{
+				"statusManual":  req.StatusManual,
+				"codigoCliente": req.CodigoCliente,
+			},
+			IPAddress: r.RemoteAddr,
+		})
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"message": "Classificação do equipamento salva com sucesso!",
@@ -4476,6 +4796,17 @@ func main() {
 			http.Error(w, fmt.Sprintf(`{"error": "Erro ao sincronizar equipamentos do RBX: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
+
+		audit.Log(audit.Entry{
+			Username: "operador",
+			UserRole: "supervisor",
+			Action:   "equipamentos.sync",
+			Module:   "equipamentos",
+			Details: map[string]interface{}{
+				"registrosAtualizados": count,
+			},
+			IPAddress: r.RemoteAddr,
+		})
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -5081,7 +5412,8 @@ func main() {
 			       COALESCE(a.contrato, ''),
 			       a.data_abertura, a.data_encerramento, COALESCE(a.situacao_os, ''),
 			       COALESCE(a.topico, ''), COALESCE(a.causa, ''), COALESCE(a.assunto, ''),
-			       COALESCE(a.solucao, ''), COALESCE(a.usuario_abertura, ''),
+			       COALESCE(a.solucao, ''),
+			       COALESCE(NULLIF(a.vendedor, ''), NULLIF(c.vendedor, ''), NULLIF(c.usuario_inclusao, ''), NULLIF(CASE WHEN a.usuario_abertura = 'routerbox' THEN '' ELSE a.usuario_abertura END, ''), a.usuario_abertura, '') as usuario_abertura,
 			       a.instalado_com_sucesso,
 			       COALESCE(NULLIF(a.cidade, ''), c.cidade, ''),
 			       COALESCE(NULLIF(a.bairro, ''), c.bairro, '')

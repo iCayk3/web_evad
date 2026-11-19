@@ -769,11 +769,13 @@ func (c *Client) ConsultarDocumentosAbertos(ctx context.Context, filtro string) 
 }
 
 type ClientAddressResult struct {
-	ClientCode   string `json:"clientCode"`
-	Name         string `json:"name"`
-	City         string `json:"city"`
-	Neighborhood string `json:"neighborhood"` // Bairro / Vila
-	District     string `json:"district"`     // Distrito cadastral (ex: Boa Vista)
+	ClientCode      string `json:"clientCode"`
+	Name            string `json:"name"`
+	City            string `json:"city"`
+	Neighborhood    string `json:"neighborhood"` // Bairro / Vila
+	District        string `json:"district"`     // Distrito cadastral (ex: Boa Vista)
+	UsuarioInclusao string `json:"usuarioInclusao"` // Usuário de inclusão do cliente no RBX
+	DataInclusao    string `json:"dataInclusao"`
 }
 
 // ConsultarClientes consulta a ficha cadastral dos clientes informados para obter Cidade e Bairro/Vila
@@ -879,13 +881,17 @@ func (c *Client) ConsultarClientes(ctx context.Context, clientCodes []string) (m
 			city := toStr(rc, "Cidade", "cidade", "Cobr_Cidade")
 			bairro := toStr(rc, "Bairro", "bairro", "Cobr_Bairro")
 			distrito := toStr(rc, "Distrito", "distrito")
+			usuarioInclusao := toStr(rc, "usuario", "Usuario", "usuario_inclusao", "Usuario_Inclusao", "CadastradoPor")
+			dataInclusao := toStr(rc, "Inclusao", "inclusao", "Data_Inclusao")
 
 			resultMap[cliCodeClean] = ClientAddressResult{
-				ClientCode:   cliCodeClean,
-				Name:         name,
-				City:         city,
-				Neighborhood: bairro,
-				District:     distrito,
+				ClientCode:      cliCodeClean,
+				Name:            name,
+				City:            city,
+				Neighborhood:    bairro,
+				District:        distrito,
+				UsuarioInclusao: usuarioInclusao,
+				DataInclusao:    dataInclusao,
 			}
 		}
 	}
@@ -921,7 +927,7 @@ func (c *Client) ConsultarAtendimentosRetirada(ctx context.Context) ([]Atendimen
 			"Autenticacao": map[string]string{
 				"ChaveIntegracao": token,
 			},
-			"Filtro": "Atendimentos.Topico IN (5, 135, 156, 158, 160) OR Atendimentos.Fluxo IN (10, 26)",
+			"Filtro": "Atendimentos.Topico IN (5, 135, 156, 158, 160, 240, 241, 242, 243) OR Atendimentos.Fluxo IN (10, 26, 43)",
 		},
 	}
 

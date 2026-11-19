@@ -161,7 +161,7 @@ export interface EquipamentoItem {
   solucao: string;
   causa: string;
   usuarioAbertura: string;
-  statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'sem_os' | 'outro';
+  statusRecuperacao: 'recuperado' | 'pendente' | 'em_andamento' | 'cancelamento_abortado' | 'sem_os' | 'perdido' | 'outro';
   statusManual?: 'recuperado' | 'tentando' | 'perdido' | 'ativo_cobranca' | '';
   observacaoManual?: string;
   atualizadoPor?: string;

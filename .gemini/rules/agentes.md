@@ -12,3 +12,4 @@ Consulte o arquivo oficial na raiz do projeto: `agentes.md`.
 4. Relatórios de impressão em PDF (A4) intocados (`print:hidden` em menus e botões).
 5. Todo código novo deve passar em `go vet ./...` no backend e `npm run build` no frontend.
 6. Sempre reconstruir e atualizar os containers Docker (`docker compose up -d --build`) ao concluir qualquer alteração de código.
+7. Proibido git push automático para o GitHub: as alterações devem permanecer estritamente locais, a menos que o usuário solicite expressamente.

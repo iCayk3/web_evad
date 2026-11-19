@@ -66,6 +66,13 @@ O módulo de Clientes Recuperados engloba o núcleo operacional já validado e d
 
 ---
 
+## 🚫 Regra de Git / Versionamento: Não Subir para o GitHub (Push Desativado)
+
+> **MANDATÓRIO:** A partir de agora, **NÃO realizar `git push` para o GitHub** (`origin/main` ou qualquer branch remota).
+> Todas as alterações de código, builds e testes devem permanecer estritamente locais no computador do usuário, a menos que o usuário solicite expressamente com ordens explícitas como *"faça o push para o github"*.
+
+---
+
 ## ✅ Checklist Obrigatório Pré-Entrega / Pré-Commit
 
 Antes de concluir qualquer tarefa e enviar para produção (`origin/main`), o agente deve executar e validar:
