@@ -165,6 +165,16 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       const res = await fetch(`${API_BASE}/api/equipamentos/retiradas?month=${month}`);
       if (res.ok) {
         const json: EquipamentoResponse = await res.json();
+        // Garantir lista válida e deduplicação estrita de ordens por ID
+        if (json && Array.isArray(json.orders)) {
+          const seen = new Set<string>();
+          json.orders = json.orders.filter((o) => {
+            if (!o.id) return false;
+            if (seen.has(o.id)) return false;
+            seen.add(o.id);
+            return true;
+          });
+        }
         setData(json);
       }
     } catch (err) {
@@ -202,8 +212,14 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
     // Atualização otimista imediata na UI
     setData((prevData) => {
       if (!prevData) return prevData;
+      const cleanOrderCli = (order.codigoCliente || '').replace(/[.,]/g, '');
       const updatedOrders = prevData.orders.map((o) => {
-        if (o.id === order.id) {
+        const cleanOCli = (o.codigoCliente || '').replace(/[.,]/g, '');
+        // Atualiza a ordem pelo ID ou, se a ordem for de uma OS real e existia uma SEM-OS do mesmo cliente, sincroniza
+        const isTarget = o.id === order.id || 
+          (!order.id.startsWith('SEM-OS-') && o.id.startsWith('SEM-OS-') && cleanOCli === cleanOrderCli);
+
+        if (isTarget) {
           return {
             ...o,
             statusManual: (newStatus || '') as any,

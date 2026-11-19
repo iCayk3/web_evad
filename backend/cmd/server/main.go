@@ -1961,10 +1961,11 @@ func extractEquipmentInfo(assunto, solucao string) (string, string) {
 	return equipStr, serialStr
 }
 
-func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.Time) string {
+func classifyRecuperacao(causa, solucao, assunto, situacaoOS string, encerramento *time.Time) string {
 	c := strings.ToUpper(strings.TrimSpace(causa))
 	s := strings.ToUpper(strings.TrimSpace(solucao))
-	full := c + " " + s
+	a := strings.ToUpper(strings.TrimSpace(assunto))
+	full := c + " " + s + " " + a
 
 	// 1. Cancelamento abortado / Reativação / Débito Quitado com Continuidade (Ativo Cobrança)
 	isReativacao := strings.Contains(full, "DESISTIU") ||
@@ -1991,7 +1992,7 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 		return "cancelamento_abortado"
 	}
 
-	// 2. Equipamento Perdido / Inviabilidade de Recuperação / Sumiu / Recusou / Extraviado / Mudou e Levou
+	// 2. Equipamento Perdido / Inviabilidade de Recuperação / Sumiu / Recusou / Extraviado / Mudou e Levou (Desfecho Negativo)
 	isPerdidoCausa := strings.Contains(c, "EQUIPAMENTO PERDIDO") ||
 		strings.Contains(c, "EQUIPAMENTO DE RETIRADA SUMIU") ||
 		strings.Contains(c, "FOI EMBORA") ||
@@ -2001,6 +2002,12 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 		strings.Contains(c, "EXTRAVIADO") ||
 		strings.Contains(c, "PERDIDO") ||
 		strings.Contains(c, "SUMIU")
+
+	isPerdidoAssunto := strings.Contains(a, "EQUIPAMENTO PERDIDO") ||
+		strings.Contains(a, "EQUIPAMENTO DE RETIRADA SUMIU") ||
+		strings.Contains(a, "CLIENTE SE RECUSA") ||
+		strings.Contains(a, "EQUIPAMENTO NÃO RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTO NAO RETIRADO")
 
 	isPerdidoSolucao := strings.Contains(s, "EQUIPAMENTO PERDIDO") ||
 		strings.Contains(s, "EQUIPAMENTOS PERDIDOS") ||
@@ -2034,17 +2041,30 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 
 	hasConfirmacaoRecuperacao := strings.Contains(s, "EQUIPAMENTO RETIRADO") ||
 		strings.Contains(s, "EQUIPAMENTOS RETIRADOS") ||
+		strings.Contains(s, "EQUIPAMENTOS RETIRADO") ||
 		strings.Contains(s, "EQUIPAMENTO COLETADO") ||
 		strings.Contains(s, "EQUIPAMENTOS COLETADOS") ||
 		strings.Contains(s, "COLETADO COM SUCESSO") ||
+		strings.Contains(s, "COLETADA COM SUCESSO") ||
 		strings.Contains(s, "ENTREGUE NO ESCRITÓRIO") ||
-		strings.Contains(s, "ENTREGOU NO ESCRITÓRIO")
+		strings.Contains(s, "ENTREGOU NO ESCRITÓRIO") ||
+		strings.Contains(a, "EQUIPAMENTO RECOLHIDO") ||
+		strings.Contains(a, "EQUIPAMENTOS RECOLHIDOS") ||
+		strings.Contains(a, "EQUIPAMENTO JÁ FOI RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTO JA FOI RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTO ENTREGUE") ||
+		strings.Contains(a, "EQUIPAMENTOS ENTREGUES") ||
+		strings.Contains(c, "EQUIPAMENTO RECOLHIDO") ||
+		strings.Contains(c, "EQUIPAMENTO RETIRADO") ||
+		strings.Contains(c, "EQUIP.. RETIRADO") ||
+		strings.Contains(c, "RETIRADO / CTO DESCONECTADA")
 
-	if (isPerdidoCausa || isPerdidoSolucao) && !hasConfirmacaoRecuperacao {
+	if (isPerdidoCausa || isPerdidoSolucao || isPerdidoAssunto) && !hasConfirmacaoRecuperacao {
 		return "perdido"
 	}
 
-	// 3. Equipamento Recuperado com sucesso
+	// 3. Equipamento Recuperado com sucesso (Desfecho Positivo)
+	// Identifica desfecho positivo no chamado final ou no histórico de fluxos intermediários em Assunto
 	isRecuperadoCausa := strings.Contains(c, "EQUIP.. RETIRADO") ||
 		strings.Contains(c, "EQUIPAMENTO RETIRADO") ||
 		strings.Contains(c, "EQUIPAMENTO CONFERIDO") ||
@@ -2055,7 +2075,22 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 		strings.Contains(c, "EQUIPAMENTO RECOLHIDO") ||
 		strings.Contains(c, "EQUIPAMENTO TROCADO") ||
 		strings.Contains(c, "EQUIPAMENTO UTILIZADO") ||
-		strings.Contains(c, "MATERIAIS DEVOLVIDOS")
+		strings.Contains(c, "MATERIAIS DEVOLVIDOS") ||
+		(strings.Contains(c, "DESCONECTADO CTO") && (situacaoOS == "C" || situacaoOS == "F" || hasConfirmacaoRecuperacao))
+
+	isRecuperadoAssunto := strings.Contains(a, "EQUIPAMENTO RECOLHIDO") ||
+		strings.Contains(a, "EQUIPAMENTOS RECOLHIDOS") ||
+		strings.Contains(a, "EQUIPAMENTO RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTOS RETIRADOS") ||
+		strings.Contains(a, "EQUIPAMENTO JÁ FOI RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTO JA FOI RETIRADO") ||
+		strings.Contains(a, "EQUIPAMENTO ENTREGUE") ||
+		strings.Contains(a, "EQUIPAMENTOS ENTREGUES") ||
+		strings.Contains(a, "REALIZAR APENAS A DESCONEXÃO DA CTO") ||
+		strings.Contains(a, "REALIZAR APENAS A DESCONEXAO DA CTO") ||
+		strings.Contains(a, "ENCAMINHAR PARA DESCONEXÃO DE CTO") ||
+		strings.Contains(a, "ENCAMINHAR PARA DESCONEXAO DE CTO") ||
+		strings.Contains(a, "TODOS OS EQUIPAMENTOS UTILIZADOS")
 
 	isRecuperadoSolucao := strings.Contains(s, "EQUIPAMENTO RETIRADO") ||
 		strings.Contains(s, "EQUIPAMENTOS RETIRADOS") ||
@@ -2078,9 +2113,11 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 		strings.Contains(s, "ENTREGOU NO ESCRITORIO") ||
 		strings.Contains(s, "ENTREGUE NA RECEPÇÃO") ||
 		strings.Contains(s, "ENTREGOU OS EQUIPAMENTOS") ||
-		strings.Contains(s, "DEVOLVEU O EQUIPAMENTO")
+		strings.Contains(s, "DEVOLVEU O EQUIPAMENTO") ||
+		strings.Contains(s, "DESPLUGADO DA CTO") ||
+		strings.Contains(s, "DESCONECTADO DA CTO")
 
-	if isRecuperadoCausa || isRecuperadoSolucao {
+	if isRecuperadoCausa || isRecuperadoSolucao || isRecuperadoAssunto {
 		return "recuperado"
 	}
 
@@ -2113,14 +2150,14 @@ func classifyRecuperacao(causa, solucao, situacaoOS string, encerramento *time.T
 		return "pendente"
 	}
 
-	// 5. Se não possui data de encerramento
-	if encerramento == nil {
-		return "em_andamento"
-	}
-
-	// 6. Concluída / Finalizada no RBX
+	// 5. Concluída / Finalizada no RBX
 	if situacaoOS == "C" || situacaoOS == "F" {
 		return "recuperado"
+	}
+
+	// 6. Se não possui data de encerramento
+	if encerramento == nil {
+		return "em_andamento"
 	}
 
 	return "pendente"
@@ -2145,7 +2182,7 @@ func syncAtendimentosEquipamentos(ctx context.Context, client *rbx.Client) (int,
 			mesComp = at.AberturaDataHora.Format("2006-01")
 		}
 
-		statusRec := classifyRecuperacao(at.Causa, at.Solucao, at.SituacaoOS, at.EncerramentoDataHora)
+		statusRec := classifyRecuperacao(at.Causa, at.Solucao, at.Assunto, at.SituacaoOS, at.EncerramentoDataHora)
 		equip, serial := extractEquipmentInfo(at.Assunto, at.Solucao)
 
 		_, err := dbPool.Exec(ctx, `
@@ -4124,7 +4161,7 @@ func main() {
 		// + Deduplicação cadastral transparente
 		equipQuery := `
 			WITH excel_clients AS (
-				SELECT DISTINCT 
+				SELECT DISTINCT ON (REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', ''))
 					eb.codigo_rbx,
 					REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') as codigo_clean,
 					eb.contrato,
@@ -4136,6 +4173,22 @@ func main() {
 				FROM eventos_bloqueio eb
 				WHERE eb.mes_competencia = $1
 				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+				ORDER BY REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', ''), eb.data_bloqueio DESC
+			),
+			clean_clientes AS (
+				SELECT DISTINCT ON (REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', ''))
+					REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') as codigo_clean,
+					c.nome,
+					c.cidade,
+					c.bairro,
+					c.distrito,
+					c.contrato,
+					c.plano,
+					c.criado_em
+				FROM clientes c
+				ORDER BY REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', ''), 
+				         CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
+				         c.criado_em DESC
 			),
 			raw_atends AS (
 				SELECT 
@@ -4175,13 +4228,15 @@ func main() {
 					COALESCE(a.serial_mac, '') as serial_mac,
 					ec.status_desfecho,
 					ROW_NUMBER() OVER (
-						PARTITION BY a.id, ec.codigo_clean 
-						ORDER BY CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END, 
-						         c.criado_em DESC
+						PARTITION BY ec.codigo_clean 
+						ORDER BY 
+						  CASE WHEN a.situacao_os IN ('C', 'F') OR a.status_recuperacao = 'recuperado' THEN 0 ELSE 1 END,
+						  a.data_encerramento DESC NULLS LAST,
+						  a.data_abertura DESC
 					) as dup_rank
 				FROM atendimentos_equipamentos a
 				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
-				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clean_clientes c ON c.codigo_clean = ec.codigo_clean
 				WHERE (a.mes_competencia = $1 OR a.data_abertura >= ec.data_bloqueio - interval '30 days')
 			),
 			atends AS (
@@ -4238,16 +4293,14 @@ func main() {
 					ec.status_desfecho,
 					false as eh_duplicado
 				FROM excel_clients ec
-				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clean_clientes c ON c.codigo_clean = ec.codigo_clean
 				WHERE ec.status_desfecho IN ('churned', 'suspended')
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
 					  WHERE REPLACE(REPLACE(ae.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
 					    AND (ae.mes_competencia = $1 OR ae.data_abertura >= ec.data_bloqueio - interval '30 days')
 				  )
-				ORDER BY ec.codigo_clean, 
-				         CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
-				         c.criado_em DESC NULLS LAST
+				ORDER BY ec.codigo_clean, ec.data_bloqueio DESC
 			),
 			sem_os AS (
 				SELECT 
@@ -4269,18 +4322,22 @@ func main() {
 				UNION ALL
 				SELECT * FROM sem_os
 			) u
-			LEFT JOIN (
-				SELECT DISTINCT ON (COALESCE(NULLIF(registro_id, ''), codigo_cliente))
-					registro_id, 
-					REPLACE(REPLACE(codigo_cliente, '.', ''), ',', '') as codigo_clean,
-					status_manual, observacao, atualizado_por, atualizado_em
-				FROM auditoria_equipamentos_manual
-				ORDER BY COALESCE(NULLIF(registro_id, ''), codigo_cliente), atualizado_em DESC
-			) aem ON (
-				aem.registro_id = u.id 
-				OR aem.registro_id = 'SEM-OS-' || u.codigo_cliente
-				OR (u.status_recuperacao = 'sem_os' AND aem.codigo_clean = REPLACE(REPLACE(u.codigo_cliente, '.', ''), ',', ''))
-			)
+			LEFT JOIN LATERAL (
+				SELECT aem_inner.status_manual, aem_inner.observacao, aem_inner.atualizado_por, aem_inner.atualizado_em
+				FROM auditoria_equipamentos_manual aem_inner
+				WHERE aem_inner.registro_id = u.id
+				   OR (
+					   u.id LIKE 'SEM-OS-%' 
+					   AND (
+						   aem_inner.registro_id = 'SEM-OS-' || u.codigo_cliente
+						   OR REPLACE(REPLACE(aem_inner.codigo_cliente, '.', ''), ',', '') = REPLACE(REPLACE(u.codigo_cliente, '.', ''), ',', '')
+					   )
+				   )
+				ORDER BY 
+					CASE WHEN aem_inner.registro_id = u.id THEN 0 ELSE 1 END,
+					aem_inner.atualizado_em DESC
+				LIMIT 1
+			) aem ON true
 			ORDER BY 
 				CASE WHEN status_recuperacao = 'sem_os' AND (aem.status_manual IS NULL OR aem.status_manual = '') THEN 1 ELSE 0 END,
 				eh_duplicado ASC,
@@ -4294,7 +4351,7 @@ func main() {
 		}
 		defer rows.Close()
 
-		var orders []EquipamentoItem
+		orders := []EquipamentoItem{}
 		var summary EquipamentoSummary
 		cityMap := make(map[string]*EquipamentoCityStats)
 
@@ -4443,7 +4500,7 @@ func main() {
 
 		annualQuery := `
 			WITH excel_clients AS (
-				SELECT DISTINCT 
+				SELECT DISTINCT ON (REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', ''), eb.mes_competencia)
 					eb.codigo_rbx,
 					REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', '') as codigo_clean,
 					eb.mes_competencia,
@@ -4456,6 +4513,19 @@ func main() {
 				FROM eventos_bloqueio eb
 				WHERE eb.mes_competencia LIKE $1
 				  AND (eb.eh_mimo IS FALSE OR eb.eh_mimo IS NULL)
+				ORDER BY REPLACE(REPLACE(eb.codigo_rbx, '.', ''), ',', ''), eb.mes_competencia, eb.data_bloqueio DESC
+			),
+			clean_clientes AS (
+				SELECT DISTINCT ON (REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', ''))
+					REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') as codigo_clean,
+					c.cidade,
+					c.bairro,
+					c.distrito,
+					c.criado_em
+				FROM clientes c
+				ORDER BY REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', ''), 
+				         CASE WHEN NULLIF(TRIM(c.bairro), '') IS NOT NULL AND c.bairro != 'Não Informado' THEN 0 ELSE 1 END,
+				         c.criado_em DESC
 			),
 			raw_atends AS (
 				SELECT 
@@ -4485,7 +4555,7 @@ func main() {
 					) as dup_rank
 				FROM atendimentos_equipamentos a
 				JOIN excel_clients ec ON REPLACE(REPLACE(a.codigo_cliente, '.', ''), ',', '') = ec.codigo_clean
-				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clean_clientes c ON c.codigo_clean = ec.codigo_clean
 				WHERE (a.mes_competencia = ec.mes_competencia OR a.data_abertura >= ec.data_bloqueio - interval '30 days')
 			),
 			atends AS (
@@ -4516,7 +4586,7 @@ func main() {
 						ELSE COALESCE(NULLIF(INITCAP(TRIM(c.cidade)), ''), 'Não Informado')
 					END as cidade
 				FROM excel_clients ec
-				LEFT JOIN clientes c ON REPLACE(REPLACE(c.codigo_rbx, '.', ''), ',', '') = ec.codigo_clean
+				LEFT JOIN clean_clientes c ON c.codigo_clean = ec.codigo_clean
 				WHERE ec.status_desfecho IN ('churned', 'suspended')
 				  AND NOT EXISTS (
 					  SELECT 1 FROM atendimentos_equipamentos ae
@@ -4539,18 +4609,22 @@ func main() {
 					UNION ALL
 					SELECT id, codigo_clean, mes_competencia, status_recuperacao, status_desfecho, cidade FROM raw_sem_os
 				) u
-				LEFT JOIN (
-					SELECT DISTINCT ON (COALESCE(NULLIF(registro_id, ''), codigo_cliente))
-						registro_id, 
-						REPLACE(REPLACE(codigo_cliente, '.', ''), ',', '') as codigo_clean,
-						status_manual, observacao, atualizado_por, atualizado_em
-					FROM auditoria_equipamentos_manual
-					ORDER BY COALESCE(NULLIF(registro_id, ''), codigo_cliente), atualizado_em DESC
-				) aem ON (
-					aem.registro_id = u.id 
-					OR aem.registro_id = 'SEM-OS-' || u.codigo_clean
-					OR (u.status_recuperacao = 'sem_os' AND aem.codigo_clean = u.codigo_clean)
-				)
+				LEFT JOIN LATERAL (
+					SELECT aem_inner.status_manual
+					FROM auditoria_equipamentos_manual aem_inner
+					WHERE aem_inner.registro_id = u.id
+					   OR (
+						   u.id LIKE 'SEM-OS-%' 
+						   AND (
+							   aem_inner.registro_id = 'SEM-OS-' || u.codigo_clean
+							   OR REPLACE(REPLACE(aem_inner.codigo_cliente, '.', ''), ',', '') = u.codigo_clean
+						   )
+					   )
+					ORDER BY 
+						CASE WHEN aem_inner.registro_id = u.id THEN 0 ELSE 1 END,
+						aem_inner.atualizado_em DESC
+					LIMIT 1
+				) aem ON true
 			)
 			SELECT mes_competencia, cidade, status_desfecho, status_final
 			FROM all_items
@@ -4732,6 +4806,8 @@ func main() {
 			req.AtualizadoPor = "Operador"
 		}
 
+		cleanCod := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.CodigoCliente), ".", ""), ",", "")
+
 		if req.StatusManual == "" && strings.TrimSpace(req.Observacao) == "" {
 			_, err := dbPool.Exec(ctx, "DELETE FROM auditoria_equipamentos_manual WHERE registro_id = $1", req.RegistroID)
 			if err != nil {
@@ -4753,6 +4829,16 @@ func main() {
 			if err != nil {
 				http.Error(w, fmt.Sprintf(`{"error": "Erro ao salvar classificação: %v"}`, err), http.StatusInternalServerError)
 				return
+			}
+
+			// Se a auditoria for de uma OS real (ex: #78102), limpa qualquer auditoria antiga e obsoleta "SEM-OS-..." para este mesmo cliente
+			if !strings.HasPrefix(req.RegistroID, "SEM-OS-") && cleanCod != "" {
+				_, _ = dbPool.Exec(ctx, `
+					DELETE FROM auditoria_equipamentos_manual 
+					WHERE registro_id = $1 
+					   OR registro_id = $2
+					   OR (registro_id LIKE 'SEM-OS-%' AND REPLACE(REPLACE(codigo_cliente, '.', ''), ',', '') = $3)
+				`, "SEM-OS-"+req.CodigoCliente, "SEM-OS-"+cleanCod, cleanCod)
 			}
 		}
 
