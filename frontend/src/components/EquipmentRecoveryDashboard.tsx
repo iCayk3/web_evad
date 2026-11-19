@@ -319,15 +319,21 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       );
     }
 
-    let total = 0, rec = 0, tent = 0, perd = 0, ativ = 0, sem = 0;
+    let total = 0, rec = 0, tent = 0, perd = 0, ativ = 0, sem = 0, dup = 0;
     data.orders.forEach((o) => {
-      if (o.ehDuplicado) return;
       if (cohortFilter === 'nao_retornados' && o.statusDesfecho !== 'churned' && o.statusDesfecho !== 'suspended') {
         return;
       }
       if (cohortFilter === 'retornados' && o.statusDesfecho !== 'returned') {
         return;
       }
+      if (cityFilter !== 'todas' && o.cidade !== cityFilter) {
+        return;
+      }
+      if (o.ehDuplicado) {
+        dup++;
+      }
+      if (!showDuplicates && o.ehDuplicado) return;
 
       total++;
       const s = o.statusFinal || o.statusManual || o.statusRecuperacao;
@@ -343,7 +349,7 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
 
     return {
       totalOrders: total,
-      totalDuplicados: data.summary?.totalDuplicados || 0,
+      totalDuplicados: dup,
       recuperados: rec,
       tentando: tent,
       perdidos: perd,
@@ -355,18 +361,41 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
       taxaRecuperacao: taxaRec,
       taxaEfetividadeOS: taxaEfet,
     };
-  }, [data?.orders, data?.summary, cohortFilter]);
+  }, [data?.orders, data?.summary, cohortFilter, cityFilter, showDuplicates]);
 
-  const citiesList = useMemo(() => {
-    if (!data?.orders) return [];
-    const set = new Set<string>();
+  const activeCityStats = useMemo(() => {
+    if (!data?.orders) return data?.byCity || [];
+    const map = new Map<string, { cidade: string; total: number; recuperados: number; pendentes: number; semOS: number; taxaRecuperacao: number }>();
+    
     data.orders.forEach((o) => {
+      if (!showDuplicates && o.ehDuplicado) return;
       if (cohortFilter === 'nao_retornados' && o.statusDesfecho !== 'churned' && o.statusDesfecho !== 'suspended') return;
       if (cohortFilter === 'retornados' && o.statusDesfecho !== 'returned') return;
-      if (o.cidade && o.cidade !== 'Não Informado') set.add(o.cidade);
+
+      const cidade = o.cidade || 'Não Informado';
+      if (!map.has(cidade)) {
+        map.set(cidade, { cidade, total: 0, recuperados: 0, pendentes: 0, semOS: 0, taxaRecuperacao: 0 });
+      }
+      const entry = map.get(cidade)!;
+      entry.total++;
+      const s = o.statusFinal || o.statusManual || o.statusRecuperacao;
+      if (s === 'recuperado') entry.recuperados++;
+      else if (s === 'tentando' || s === 'pendente' || s === 'em_andamento') entry.pendentes++;
+      else if (s === 'sem_os') entry.semOS++;
     });
-    return Array.from(set).sort();
-  }, [data?.orders, cohortFilter]);
+
+    const list = Array.from(map.values()).map((entry) => ({
+      ...entry,
+      taxaRecuperacao: entry.total > 0 ? Math.round((entry.recuperados / entry.total) * 1000) / 10 : 0,
+    }));
+
+    list.sort((a, b) => b.total - a.total);
+    return list;
+  }, [data?.orders, data?.byCity, cohortFilter, showDuplicates]);
+
+  const citiesList = useMemo(() => {
+    return activeCityStats.map((c) => c.cidade).filter((c) => c !== 'Não Informado');
+  }, [activeCityStats]);
 
   const filteredOrders = useMemo(() => {
     if (!data?.orders) return [];
@@ -1091,12 +1120,12 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                 </p>
               </div>
               <span className="text-xs font-semibold text-slate-400">
-                {data?.byCity?.length || 0} praças atendidas
+                {activeCityStats?.length || 0} praças atendidas
               </span>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {data?.byCity?.map((c) => (
+              {activeCityStats?.map((c) => (
                 <div
                   key={c.cidade}
                   onClick={() => {
@@ -1180,14 +1209,14 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
         /* ========================================================================= */
         <div className="space-y-5 animate-fade-in">
           {/* Regional Summary Badges */}
-          {data?.byCity && data.byCity.length > 0 && (
+          {activeCityStats && activeCityStats.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-xl p-3.5 sm:p-4 shadow-xs">
               <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
                 <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 <span>Desempenho por Cidade no Mês</span>
               </div>
               <div className="flex flex-wrap gap-1.5 sm:gap-2">
-                {data.byCity.map((c) => (
+                {activeCityStats.map((c) => (
                   <button
                     key={c.cidade}
                     onClick={() => setCityFilter(cityFilter === c.cidade ? 'todas' : c.cidade)}
@@ -1263,18 +1292,23 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                   onChange={(e) => setCityFilter(e.target.value)}
                   className="bg-transparent text-slate-800 border-none outline-none cursor-pointer pr-1 w-full sm:w-auto text-xs"
                 >
-                  <option value="todas">Todas as Cidades ({data?.orders.length || 0})</option>
-                  {citiesList.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
+                  <option value="todas">
+                    Todas as Cidades ({activeCityStats.reduce((acc, c) => acc + c.total, 0)})
+                  </option>
+                  {citiesList.map((c) => {
+                    const cityStat = activeCityStats.find((item) => item.cidade === c);
+                    return (
+                      <option key={c} value={c}>
+                        {c} {cityStat ? `(${cityStat.total})` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
 
             {/* Toggle para exibir ou manter oculto os cadastros duplicados (por padrão oculto) */}
-            {summary.totalDuplicados > 0 && (
+            {(summary.totalDuplicados > 0 || showDuplicates) && (
               <button
                 onClick={() => setShowDuplicates((prev) => !prev)}
                 className={`flex items-center justify-center space-x-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer select-none shrink-0 ${
