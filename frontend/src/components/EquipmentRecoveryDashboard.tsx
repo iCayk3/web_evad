@@ -1751,8 +1751,26 @@ export const EquipmentRecoveryDashboard: React.FC<EquipmentRecoveryDashboardProp
                                     <div className="text-slate-700 whitespace-pre-line bg-slate-50 p-2.5 rounded border border-slate-200/60 text-[11px] leading-relaxed max-h-48 overflow-y-auto font-mono">
                                       {order.assunto || 'Sem detalhes no assunto.'}
                                     </div>
-                                    <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                                    <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between flex-wrap gap-1">
                                       <span>Abertura por: <strong>{order.usuarioAbertura || 'Sistema'}</strong></span>
+                                      <span>
+                                        Situação OS no RBX:{' '}
+                                        <strong className={order.situacaoOS === 'C' ? 'text-emerald-700 font-bold' : order.situacaoOS === 'F' ? 'text-amber-700 font-bold' : ''}>
+                                          {order.situacaoOS === 'C'
+                                            ? 'Concluída'
+                                            : order.situacaoOS === 'F'
+                                            ? 'Na Fila (Em Aberto)'
+                                            : order.situacaoOS === 'E'
+                                            ? 'Em Execução'
+                                            : order.situacaoOS === 'A'
+                                            ? 'A Caminho'
+                                            : order.situacaoOS === 'P'
+                                            ? 'Pausada'
+                                            : order.situacaoOS === 'B'
+                                            ? 'Cancelada / Abortada'
+                                            : order.situacaoOS || 'Em Aberto'}
+                                        </strong>
+                                      </span>
                                       <span>Protocolo: <strong className="font-mono">{order.protocolo}</strong></span>
                                     </div>
                                   </div>

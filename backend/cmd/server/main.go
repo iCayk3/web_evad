@@ -512,6 +512,25 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool) {
 		   OR assunto ILIKE '%verificar com o cliente se ele esta%satisfeito%';
 
 		-- Atualiza os totais consolidados de instalações, cancelamentos e suspensos em rbx_metricas_mensais
+		UPDATE atendimentos_equipamentos
+		SET status_recuperacao = 'em_andamento'
+		WHERE (situacao_os = 'F' OR data_encerramento IS NULL)
+		  AND status_recuperacao = 'recuperado'
+		  AND (causa IS NULL OR (causa NOT ILIKE '%RETIRAD%' AND causa NOT ILIKE '%RECOLHID%' AND causa NOT ILIKE '%CONFERIDO%'))
+		  AND (solucao IS NULL OR (
+		      solucao NOT ILIKE '%RETIRAD%' 
+		      AND solucao NOT ILIKE '%RECOLHID%' 
+		      AND solucao NOT ILIKE '%COLETAD%'
+		      AND solucao NOT ILIKE '%ENTREGUE%'
+		      AND solucao NOT ILIKE '%ENTREGOU%'
+		      AND solucao NOT ILIKE '%DEVOLVEU%'
+		  ))
+		  AND (assunto NOT ILIKE '%JÁ FOI RETIRADO%'
+		      AND assunto NOT ILIKE '%JA FOI RETIRADO%'
+		      AND assunto NOT ILIKE '%EQUIPAMENTO RECOLHIDO%'
+		      AND assunto NOT ILIKE '%EQUIPAMENTO ENTREGUE%'
+		  );
+
 		UPDATE rbx_metricas_mensais m
 		SET total_cancelamentos = COALESCE((
 			SELECT COUNT(*) FROM rbx_contratos_cancelados c
@@ -2076,7 +2095,7 @@ func classifyRecuperacao(causa, solucao, assunto, situacaoOS string, encerrament
 		strings.Contains(c, "EQUIPAMENTO TROCADO") ||
 		strings.Contains(c, "EQUIPAMENTO UTILIZADO") ||
 		strings.Contains(c, "MATERIAIS DEVOLVIDOS") ||
-		(strings.Contains(c, "DESCONECTADO CTO") && (situacaoOS == "C" || situacaoOS == "F" || hasConfirmacaoRecuperacao))
+		(strings.Contains(c, "DESCONECTADO CTO") && (situacaoOS == "C" || hasConfirmacaoRecuperacao))
 
 	isRecuperadoAssunto := strings.Contains(a, "EQUIPAMENTO RECOLHIDO") ||
 		strings.Contains(a, "EQUIPAMENTOS RECOLHIDOS") ||
@@ -2150,14 +2169,15 @@ func classifyRecuperacao(causa, solucao, assunto, situacaoOS string, encerrament
 		return "pendente"
 	}
 
-	// 5. Concluída / Finalizada no RBX
-	if situacaoOS == "C" || situacaoOS == "F" {
-		return "recuperado"
+	// 5. Se não possui data de encerramento ou a OS ainda está aberta/na fila/em execução no RBX:
+	// No RBX Soft: F = Na Fila (aguardando atendimento), A = A caminho, E = Em execução, P = Pausado.
+	if encerramento == nil || situacaoOS == "F" || situacaoOS == "A" || situacaoOS == "E" || situacaoOS == "P" {
+		return "em_andamento"
 	}
 
-	// 6. Se não possui data de encerramento
-	if encerramento == nil {
-		return "em_andamento"
+	// 6. Concluída no RBX (C = Concluído)
+	if situacaoOS == "C" {
+		return "recuperado"
 	}
 
 	return "pendente"
@@ -4230,7 +4250,7 @@ func main() {
 					ROW_NUMBER() OVER (
 						PARTITION BY ec.codigo_clean 
 						ORDER BY 
-						  CASE WHEN a.situacao_os IN ('C', 'F') OR a.status_recuperacao = 'recuperado' THEN 0 ELSE 1 END,
+						  CASE WHEN a.situacao_os = 'C' OR a.status_recuperacao = 'recuperado' THEN 0 ELSE 1 END,
 						  a.data_encerramento DESC NULLS LAST,
 						  a.data_abertura DESC
 					) as dup_rank
