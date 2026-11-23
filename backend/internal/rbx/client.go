@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -160,9 +161,61 @@ type Client struct {
 }
 
 func NewClient(cfg Config) *Client {
+	// Resolvedor Go resiliente com fallback para Cloudflare (1.1.1.1) e Google (8.8.8.8)
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			conn, err := d.DialContext(ctx, network, address)
+			if err == nil {
+				return conn, nil
+			}
+			// Fallback 1: Cloudflare DNS
+			conn, err2 := d.DialContext(ctx, "udp", "1.1.1.1:53")
+			if err2 == nil {
+				return conn, nil
+			}
+			// Fallback 2: Google DNS
+			return d.DialContext(ctx, "udp", "8.8.8.8:53")
+		},
+	}
+
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Resolver:  resolver,
+	}
+
 	tr := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true, // Provedores de internet frequentemente usam certificados locais ou autoassinados
+		},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Tenta conexão padrão com resolver resiliente
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err == nil {
+				return conn, nil
+			}
+
+			// Fallback caso o resolvedor interno do Docker (127.0.0.11:53) apresente "server misbehaving"
+			host, port, splitErr := net.SplitHostPort(addr)
+			if splitErr == nil {
+				if strings.EqualFold(host, "sistema.solprovedor.com.br") {
+					fallbackAddr := net.JoinHostPort("45.166.31.202", port)
+					connFallback, errFallback := dialer.DialContext(ctx, network, fallbackAddr)
+					if errFallback == nil {
+						return connFallback, nil
+					}
+				}
+			}
+
+			return nil, err
 		},
 	}
 
